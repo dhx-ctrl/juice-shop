@@ -39,10 +39,11 @@ jobs:
               sonarqube:lts
           fi
 
+          echo "Waiting for SonarQube to be ready..."
           for i in {1..80}; do
-            status="$(curl -sS "$SONAR_HOST_URL/api/system/health" | grep -o '"status":"[^"]*"' || true)"
-            echo "SonarQube health: $status"
-            echo "$status" | grep -q 'GREEN\|YELLOW' && break
+            status="$(curl -sS "$SONAR_HOST_URL/api/system/status" | grep -o '"status":"[^"]*"' || true)"
+            echo "SonarQube status: $status"
+            echo "$status" | grep -q '"status":"UP"' && break
             sleep 3
           done
 
