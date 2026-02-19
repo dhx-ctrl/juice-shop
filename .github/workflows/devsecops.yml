@@ -109,28 +109,40 @@ jobs:
           docker pull bkimminich/juice-shop
           docker rm -f juice-shop || true
           docker run -d --name juice-shop --network zapnet -p 3000:3000 bkimminich/juice-shop
-          for i in {1..40}; do
-            if curl -sSf http://localhost:3000 >/dev/null; then
-              echo "Juice Shop ready"
+          sleep 5
+          for i in {1..60}; do
+            if curl -sSf http://localhost:3000 >/dev/null 2>&1; then
+              echo "Juice Shop ready after ~$((i * 3 + 5)) seconds"
               break
             fi
-            sleep 2
+            if [ "$i" -eq 60 ]; then
+              echo "ERROR: Juice Shop did not start in time"
+              docker logs juice-shop
+              exit 1
+            fi
+            sleep 3
           done
 
       - name: ZAP baseline -> zap.json
         run: |
           docker pull ghcr.io/zaproxy/zaproxy:stable
-          docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
+          chmod 777 ${{ github.workspace }}
+          docker run --rm --network zapnet \
+            -v ${{ github.workspace }}:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://juice-shop:3000 \
             -J zap.json \
             -r zap.html || true
-          cp zap.json "$SCAN_OUTPUT_DIR/zap.json"
+          echo "=== Files in workspace after ZAP ==="
+          ls -la ${{ github.workspace }}/zap.* || echo "No zap files found"
+          cp ${{ github.workspace }}/zap.json "$SCAN_OUTPUT_DIR/zap.json"
           test -s "$SCAN_OUTPUT_DIR/zap.json"
 
       - name: Stop Juice Shop
         if: always()
-        run: docker rm -f juice-shop || true
+        run: |
+          docker rm -f juice-shop || true
+          docker network rm zapnet || true
 
       # ── Verify all results ──
       - name: List scan results
