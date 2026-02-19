@@ -20,36 +20,28 @@ jobs:
       SCAN_TYPE_SONAR: "SonarQube API import"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
+      # Same local directory as CI
+      SCAN_OUTPUT_DIR: "/tmp/devsecops-scans"
 
     steps:
-      # ── Download scan artifacts from the CI workflow ──
-      - name: Download SonarQube results
-        uses: actions/download-artifact@v4
-        with:
-          name: sonarqube-results
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download Trivy results
-        uses: actions/download-artifact@v4
-        with:
-          name: trivy-results
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download ZAP results
-        uses: actions/download-artifact@v4
-        with:
-          name: zap-results
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: List downloaded files
-        run: ls -la *.json
-
-      # ── Import into DefectDojo ──
-      - name: Import SonarQube -> DefectDojo
+      # ── Verify scan files exist locally ──
+      - name: Check scan results exist
         run: |
+          echo "=== Checking local scan results ==="
+          ls -la "$SCAN_OUTPUT_DIR"/*.json
+          for f in sonarqube_issues.json trivy.json zap.json; do
+            if [ ! -s "$SCAN_OUTPUT_DIR/$f" ]; then
+              echo "WARNING: $f is missing or empty"
+            else
+              echo "OK: $f ($(wc -c < "$SCAN_OUTPUT_DIR/$f") bytes)"
+            fi
+          done
+
+      # ── Import into DefectDojo (all local) ──
+      - name: Import SonarQube -> DefectDojo
+        if: always()
+        run: |
+          [ -s "$SCAN_OUTPUT_DIR/sonarqube_issues.json" ] && \
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -58,10 +50,12 @@ jobs:
             -F "minimum_severity=Info" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@sonarqube_issues.json;type=application/json" | cat
+            -F "file=@${SCAN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json" | cat
 
       - name: Import Trivy -> DefectDojo
+        if: always()
         run: |
+          [ -s "$SCAN_OUTPUT_DIR/trivy.json" ] && \
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -70,10 +64,12 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@trivy.json;type=application/json" | cat
+            -F "file=@${SCAN_OUTPUT_DIR}/trivy.json;type=application/json" | cat
 
       - name: Import ZAP -> DefectDojo
+        if: always()
         run: |
+          [ -s "$SCAN_OUTPUT_DIR/zap.json" ] && \
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -82,4 +78,11 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@zap.json;type=application/json" | cat
+            -F "file=@${SCAN_OUTPUT_DIR}/zap.json;type=application/json" | cat
+
+      # ── Cleanup ──
+      - name: Cleanup scan files
+        if: always()
+        run: |
+          echo "Cleaning up scan results..."
+          rm -f "$SCAN_OUTPUT_DIR"/*.json
