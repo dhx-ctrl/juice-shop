@@ -1,36 +1,32 @@
-name: DevSecOps - SonarQube + Trivy + ZAP -> DefectDojo (Local)
+name: DevSecOps - Security Scans (CI)
 
 on:
   push:
     branches: ["main"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  security:
+  security-scans:
     runs-on: [self-hosted, linux, x64]
 
     env:
-      # Local DefectDojo (works because runner is local)
-      DOJO_URL: "http://localhost:8080"
-      DOJO_PRODUCT_ID: "1"
-      DOJO_ENGAGEMENT: "CI-CD"
-
-      # Exact scan types from your DefectDojo dropdown
-      SCAN_TYPE_SONAR: "SonarQube API import"
-      SCAN_TYPE_TRIVY: "Trivy Scan"
-      SCAN_TYPE_ZAP: "ZAP Scan"
-
-      # Local SonarQube
       SONAR_HOST_URL: "http://localhost:9000"
       SONAR_PROJECT_KEY: "juice-shop"
+      # Local shared directory for scan results
+      SCAN_OUTPUT_DIR: "/tmp/devsecops-scans"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --------------------------
-      # Ensure SonarQube is running
-      # --------------------------
+      # ── Prepare output directory ──
+      - name: Prepare scan output directory
+        run: |
+          mkdir -p "$SCAN_OUTPUT_DIR"
+          rm -f "$SCAN_OUTPUT_DIR"/*.json
+
+      # ── Ensure SonarQube is running ──
       - name: Ensure SonarQube is running
         run: |
           if ! docker ps --format '{{.Names}}' | grep -q '^sonarqube$'; then
@@ -50,9 +46,7 @@ jobs:
             sleep 3
           done
 
-      # --------------------------
-      # Node setup
-      # --------------------------
+      # ── Node setup ──
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -61,9 +55,7 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # --------------------------
-      # SAST: SonarQube scan
-      # --------------------------
+      # ── SAST: SonarQube ──
       - name: SonarQube scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -82,28 +74,25 @@ jobs:
             -Dsonar.sources="." \
             -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**"
 
-      - name: Export SonarQube issues (API import JSON)
+      - name: Export SonarQube issues
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           curl -sS -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&ps=500" \
-            -o sonarqube_issues.json
-          test -s sonarqube_issues.json
+            -o "$SCAN_OUTPUT_DIR/sonarqube_issues.json"
+          test -s "$SCAN_OUTPUT_DIR/sonarqube_issues.json"
 
-      # --------------------------
-      # SCA: Trivy (Docker method - reliable)
-      # --------------------------
+      # ── SCA: Trivy ──
       - name: Trivy scan -> trivy.json
         run: |
           docker pull aquasec/trivy:latest
           docker run --rm -v "${{ github.workspace }}:/repo" -w /repo aquasec/trivy:latest \
             fs --format json --output trivy.json .
-          test -s trivy.json
+          cp trivy.json "$SCAN_OUTPUT_DIR/trivy.json"
+          test -s "$SCAN_OUTPUT_DIR/trivy.json"
 
-      # --------------------------
-      # DAST: ZAP baseline
-      # --------------------------
+      # ── DAST: ZAP ──
       - name: Create docker network
         run: docker network create zapnet || true
 
@@ -128,50 +117,16 @@ jobs:
             -t http://juice-shop:3000 \
             -J zap.json \
             -r zap.html || true
-          test -s zap.json
+          cp zap.json "$SCAN_OUTPUT_DIR/zap.json"
+          test -s "$SCAN_OUTPUT_DIR/zap.json"
 
       - name: Stop Juice Shop
         if: always()
         run: docker rm -f juice-shop || true
 
-      # --------------------------
-      # Import into DefectDojo
-      # --------------------------
-      - name: Import SonarQube -> DefectDojo
+      # ── Verify all results ──
+      - name: List scan results
         if: always()
         run: |
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_SONAR}" \
-            -F "minimum_severity=Info" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@sonarqube_issues.json;type=application/json" | cat
-
-      - name: Import Trivy -> DefectDojo
-        if: always()
-        run: |
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_TRIVY}" \
-            -F "minimum_severity=Low" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@trivy.json;type=application/json" | cat
-
-      - name: Import ZAP -> DefectDojo
-        if: always()
-        run: |
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_ZAP}" \
-            -F "minimum_severity=Low" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@zap.json;type=application/json" | cat
+          echo "=== Scan results in $SCAN_OUTPUT_DIR ==="
+          ls -la "$SCAN_OUTPUT_DIR"/*.json
