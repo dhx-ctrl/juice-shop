@@ -73,18 +73,14 @@ jobs:
         node-version: [20, 22, 24]
     steps:
       - name: "Check out Git repository"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
       - name: "Use Node.js ${{ matrix.node-version }}"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af #v4.1.0
         with:
           node-version: ${{ matrix.node-version }}
       - name: "Install application"
-needs: [test, api-test, custom-config-test, docker-test]
         run: npm install
       - name: "Execute unit tests"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: nick-invision/retry@7152eba30c6575329ac0576536151aca5a72780e #v3.0.0
         with:
           timeout_minutes: 15
@@ -113,18 +109,14 @@ needs: [test, api-test, custom-config-test, docker-test]
         node-version: [20, 22, 24]
     steps:
       - name: "Check out Git repository"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
       - name: "Use Node.js ${{ matrix.node-version }}"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af #v4.1.0
         with:
           node-version: ${{ matrix.node-version }}
       - name: "Install application"
-needs: [test, api-test, custom-config-test, docker-test]
         run: npm install
       - name: "Execute integration tests"
-needs: [test, api-test, custom-config-test, docker-test]
         uses: nick-invision/retry@7152eba30c6575329ac0576536151aca5a72780e #v3.0.0
         env:
           NODE_ENV: test
