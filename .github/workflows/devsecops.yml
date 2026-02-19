@@ -55,17 +55,24 @@ jobs:
       - name: Install deps
         run: npm install
 
+      # ── Install sonar-scanner (no sudo, job-local) ──
+      - name: Install sonar-scanner
+        run: |
+          if ! command -v sonar-scanner >/dev/null 2>&1; then
+            curl -sSLo /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+            unzip -oq /tmp/sonar-scanner.zip -d "$HOME/.sonar"
+            SCANNER_DIR=$(ls -d "$HOME/.sonar/sonar-scanner-"* | head -1)
+            echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Verify sonar-scanner
+        run: sonar-scanner --version
+
       # ── SAST: SonarQube ──
       - name: SonarQube scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          if ! command -v sonar-scanner >/dev/null 2>&1; then
-            curl -sSLo /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
-            unzip -q /tmp/sonar-scanner.zip -d /tmp
-            export PATH="/tmp/sonar-scanner-*/bin:$PATH"
-          fi
-
           sonar-scanner \
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.login="$SONAR_TOKEN" \
