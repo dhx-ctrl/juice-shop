@@ -1,0 +1,85 @@
+name: Import Scans -> DefectDojo (CD)
+
+on:
+  # Triggered automatically after devsecops.yml completes
+  workflow_run:
+    workflows: ["DevSecOps - Security Scans (CI)"]
+    types:
+      - completed
+
+jobs:
+  import-to-defectdojo:
+    runs-on: [self-hosted, linux, x64]
+    # Only import if the scans workflow actually ran (even if some steps failed)
+    if: ${{ github.event.workflow_run.conclusion != 'cancelled' }}
+
+    env:
+      DOJO_URL: "http://localhost:8080"
+      DOJO_PRODUCT_ID: "1"
+      DOJO_ENGAGEMENT: "CI-CD"
+      SCAN_TYPE_SONAR: "SonarQube API import"
+      SCAN_TYPE_TRIVY: "Trivy Scan"
+      SCAN_TYPE_ZAP: "ZAP Scan"
+
+    steps:
+      # ── Download scan artifacts from the CI workflow ──
+      - name: Download SonarQube results
+        uses: actions/download-artifact@v4
+        with:
+          name: sonarqube-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Trivy results
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download ZAP results
+        uses: actions/download-artifact@v4
+        with:
+          name: zap-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List downloaded files
+        run: ls -la *.json
+
+      # ── Import into DefectDojo ──
+      - name: Import SonarQube -> DefectDojo
+        run: |
+          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_type=${SCAN_TYPE_SONAR}" \
+            -F "minimum_severity=Info" \
+            -F "product=${DOJO_PRODUCT_ID}" \
+            -F "engagement_name=${DOJO_ENGAGEMENT}" \
+            -F "file=@sonarqube_issues.json;type=application/json" | cat
+
+      - name: Import Trivy -> DefectDojo
+        run: |
+          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_type=${SCAN_TYPE_TRIVY}" \
+            -F "minimum_severity=Low" \
+            -F "product=${DOJO_PRODUCT_ID}" \
+            -F "engagement_name=${DOJO_ENGAGEMENT}" \
+            -F "file=@trivy.json;type=application/json" | cat
+
+      - name: Import ZAP -> DefectDojo
+        run: |
+          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "scan_type=${SCAN_TYPE_ZAP}" \
+            -F "minimum_severity=Low" \
+            -F "product=${DOJO_PRODUCT_ID}" \
+            -F "engagement_name=${DOJO_ENGAGEMENT}" \
+            -F "file=@zap.json;type=application/json" | cat
