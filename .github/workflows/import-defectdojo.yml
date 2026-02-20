@@ -1,47 +1,47 @@
 name: Import Scans -> DefectDojo (CD)
 
 on:
-  # Triggered automatically after devsecops.yml completes
   workflow_run:
     workflows: ["DevSecOps - Security Scans (CI)"]
-    types:
-      - completed
+    types: [completed]
 
 jobs:
   import-to-defectdojo:
     runs-on: [self-hosted, linux, x64]
-    # Only import if the scans workflow actually ran (even if some steps failed)
     if: ${{ github.event.workflow_run.conclusion != 'cancelled' }}
 
     env:
       DOJO_URL: "http://localhost:8080"
       DOJO_PRODUCT_ID: "1"
-      DOJO_ENGAGEMENT: "CI-CD"
-      SCAN_TYPE_SONAR: "SonarQube API import"
+
+      # IMPORTANT: match DefectDojo dropdown exactly
+      SCAN_TYPE_SONAR: "SonarQube API Import"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
-      # Same local directory as CI
+
       SCAN_OUTPUT_DIR: "/tmp/devsecops-scans"
 
+      # If you know engagement id (recommended):
+      DOJO_ENGAGEMENT_ID: "1"
+      # If you insist on name instead, keep:
+      # DOJO_ENGAGEMENT_NAME: "CI-CD"
+
     steps:
-      # ── Verify scan files exist locally ──
-      - name: Check scan results exist
+      - name: Check scan results exist (fail if missing)
+        shell: bash
         run: |
+          set -euo pipefail
           echo "=== Checking local scan results ==="
-          ls -la "$SCAN_OUTPUT_DIR"/*.json
+          ls -la "$SCAN_OUTPUT_DIR"
           for f in sonarqube_issues.json trivy.json zap.json; do
-            if [ ! -s "$SCAN_OUTPUT_DIR/$f" ]; then
-              echo "WARNING: $f is missing or empty"
-            else
-              echo "OK: $f ($(wc -c < "$SCAN_OUTPUT_DIR/$f") bytes)"
-            fi
+            test -s "$SCAN_OUTPUT_DIR/$f" || (echo "ERROR: missing/empty $f" && exit 1)
+            echo "OK: $f ($(wc -c < "$SCAN_OUTPUT_DIR/$f") bytes)"
           done
 
-      # ── Import into DefectDojo (all local) ──
       - name: Import SonarQube -> DefectDojo
-        if: always()
+        shell: bash
         run: |
-          [ -s "$SCAN_OUTPUT_DIR/sonarqube_issues.json" ] && \
+          set -euo pipefail
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -49,13 +49,13 @@ jobs:
             -F "scan_type=${SCAN_TYPE_SONAR}" \
             -F "minimum_severity=Info" \
             -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json" | cat
+            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+            -F "file=@${SCAN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json"
 
       - name: Import Trivy -> DefectDojo
-        if: always()
+        shell: bash
         run: |
-          [ -s "$SCAN_OUTPUT_DIR/trivy.json" ] && \
+          set -euo pipefail
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -63,13 +63,13 @@ jobs:
             -F "scan_type=${SCAN_TYPE_TRIVY}" \
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/trivy.json;type=application/json" | cat
+            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+            -F "file=@${SCAN_OUTPUT_DIR}/trivy.json;type=application/json"
 
       - name: Import ZAP -> DefectDojo
-        if: always()
+        shell: bash
         run: |
-          [ -s "$SCAN_OUTPUT_DIR/zap.json" ] && \
+          set -euo pipefail
           curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
             -F "active=true" \
@@ -77,12 +77,11 @@ jobs:
             -F "scan_type=${SCAN_TYPE_ZAP}" \
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement_name=${DOJO_ENGAGEMENT}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/zap.json;type=application/json" | cat
+            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+            -F "file=@${SCAN_OUTPUT_DIR}/zap.json;type=application/json"
 
-      # ── Cleanup ──
       - name: Cleanup scan files
         if: always()
+        shell: bash
         run: |
-          echo "Cleaning up scan results..."
           rm -f "$SCAN_OUTPUT_DIR"/*.json
