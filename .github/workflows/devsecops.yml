@@ -123,10 +123,10 @@ jobs:
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://juice-shop:3000 \
-            -J zap.json \
+            -x zap.xml \
             -r zap.html || true
-          cp zap.json "$SCAN_OUTPUT_DIR/zap.json"
-          test -s "$SCAN_OUTPUT_DIR/zap.json"
+          cp zap.xml "$SCAN_OUTPUT_DIR/zap.xml"
+          test -s "$SCAN_OUTPUT_DIR/zap.xml"
 
       - name: Stop Juice Shop
         if: always()
