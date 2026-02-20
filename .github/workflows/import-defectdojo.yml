@@ -8,35 +8,37 @@ on:
 jobs:
   import-to-defectdojo:
     runs-on: [self-hosted, linux, x64]
-    if: ${{ github.event.workflow_run.conclusion != 'cancelled' }}
+    timeout-minutes: 30
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     env:
       DOJO_URL: "http://localhost:8080"
       DOJO_PRODUCT_ID: "1"
 
-      # IMPORTANT: match DefectDojo dropdown exactly
+      # Use engagement ID (recommended; stable)
+      DOJO_ENGAGEMENT_ID: "1"
+
+      # Exact scan types (must match DefectDojo dropdown)
       SCAN_TYPE_SONAR: "SonarQube API Import"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
 
-      SCAN_OUTPUT_DIR: "/tmp/devsecops-scans"
-
-      # If you know engagement id (recommended):
-      DOJO_ENGAGEMENT_ID: "1"
-      # If you insist on name instead, keep:
-      # DOJO_ENGAGEMENT_NAME: "CI-CD"
+      # Match the CI run folder
+      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
 
     steps:
-      - name: Check scan results exist (fail if missing)
+      - name: Verify scan files exist
         shell: bash
         run: |
           set -euo pipefail
-          echo "=== Checking local scan results ==="
-          ls -la "$SCAN_OUTPUT_DIR"
-          for f in sonarqube_issues.json trivy.json zap.xml; do
-            test -s "$SCAN_OUTPUT_DIR/$f" || (echo "ERROR: missing/empty $f" && exit 1)
-            echo "OK: $f ($(wc -c < "$SCAN_OUTPUT_DIR/$f") bytes)"
-          done
+          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
+          ls -la "$RUN_OUTPUT_DIR"
+
+          test -s "$RUN_OUTPUT_DIR/sonarqube_issues.json"
+          test -s "$RUN_OUTPUT_DIR/trivy.json"
+          test -s "$RUN_OUTPUT_DIR/zap.xml"
+
+          echo "All required scan files exist."
 
       - name: Import SonarQube -> DefectDojo
         shell: bash
@@ -50,7 +52,7 @@ jobs:
             -F "minimum_severity=Info" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json"
+            -F "file=@${RUN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json"
 
       - name: Import Trivy -> DefectDojo
         shell: bash
@@ -64,9 +66,9 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/trivy.json;type=application/json"
+            -F "file=@${RUN_OUTPUT_DIR}/trivy.json;type=application/json"
 
-      - name: Import ZAP -> DefectDojo
+      - name: Import ZAP -> DefectDojo (XML)
         shell: bash
         run: |
           set -euo pipefail
@@ -78,10 +80,10 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/zap.xml;type=type=text/xml"
+            -F "file=@${RUN_OUTPUT_DIR}/zap.xml;type=text/xml"
 
-      - name: Cleanup scan files
+      - name: Cleanup run folder
         if: always()
         shell: bash
         run: |
-          rm -f "$SCAN_OUTPUT_DIR"/*.json
+          rm -rf "$RUN_OUTPUT_DIR" || true
