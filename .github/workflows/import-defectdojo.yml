@@ -78,7 +78,7 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/zap.xml;type=application/json"
+            -F "file=@${SCAN_OUTPUT_DIR}/zap.xml;type=type=text/xml"
 
       - name: Cleanup scan files
         if: always()
