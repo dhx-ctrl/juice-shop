@@ -9,12 +9,15 @@ on:
 jobs:
   security-scans:
     runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 90
 
     env:
       SONAR_HOST_URL: "http://localhost:9000"
       SONAR_PROJECT_KEY: "juice-shop"
-      # Local shared directory for scan results
-      SCAN_OUTPUT_DIR: "/tmp/devsecops-scans"
+
+      # Base folder (CD will use run_id subfolder)
+      SCAN_BASE_DIR: "/tmp/devsecops-scans"
+      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
 
     steps:
       - name: Checkout
@@ -22,13 +25,19 @@ jobs:
 
       # ── Prepare output directory ──
       - name: Prepare scan output directory
+        shell: bash
         run: |
-          mkdir -p "$SCAN_OUTPUT_DIR"
-          rm -f "$SCAN_OUTPUT_DIR"/*.json
+          set -euo pipefail
+          mkdir -p "$RUN_OUTPUT_DIR"
+          rm -f "$RUN_OUTPUT_DIR"/* || true
+          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
 
       # ── Ensure SonarQube is running ──
       - name: Ensure SonarQube is running
+        shell: bash
         run: |
+          set -euo pipefail
+
           if ! docker ps --format '{{.Names}}' | grep -q '^sonarqube$'; then
             docker rm -f sonarqube || true
             docker volume create sonarqube_data || true
@@ -39,11 +48,10 @@ jobs:
               sonarqube:lts
           fi
 
-          echo "Waiting for SonarQube to be ready..."
           for i in {1..80}; do
-            status="$(curl -sS "$SONAR_HOST_URL/api/system/status" | grep -o '"status":"[^"]*"' || true)"
-            echo "SonarQube status: $status"
-            echo "$status" | grep -q '"status":"UP"' && break
+            status="$(curl -sS "$SONAR_HOST_URL/api/system/health" | grep -o '"status":"[^"]*"' || true)"
+            echo "SonarQube health: $status"
+            echo "$status" | grep -q 'GREEN\|YELLOW' && break
             sleep 3
           done
 
@@ -54,26 +62,30 @@ jobs:
           node-version: "20"
 
       - name: Install deps
-        run: npm install
-
-      # ── Install sonar-scanner (no sudo, job-local) ──
-      - name: Install sonar-scanner
+        shell: bash
         run: |
+          set -euo pipefail
+          npm install
+
+      # ── Install sonar-scanner (no sudo) ──
+      - name: Install sonar-scanner (no sudo)
+        shell: bash
+        run: |
+          set -euo pipefail
           if ! command -v sonar-scanner >/dev/null 2>&1; then
             curl -sSLo /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
-            unzip -oq /tmp/sonar-scanner.zip -d "$HOME/.sonar"
-            SCANNER_DIR=$(ls -d "$HOME/.sonar/sonar-scanner-"* | head -1)
-            echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"
+            unzip -oq /tmp/sonar-scanner.zip -d /tmp
+            echo "/tmp/sonar-scanner-6.2.1.4610-linux-x64/bin" >> $GITHUB_PATH
           fi
-
-      - name: Verify sonar-scanner
-        run: sonar-scanner --version
+          sonar-scanner --version
 
       # ── SAST: SonarQube ──
       - name: SonarQube scan
+        shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          set -euo pipefail
           sonar-scanner \
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.login="$SONAR_TOKEN" \
@@ -82,34 +94,45 @@ jobs:
             -Dsonar.sources="." \
             -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**"
 
-      - name: Export SonarQube issues
+      - name: Export SonarQube issues (API Import JSON)
+        shell: bash
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          set -euo pipefail
           curl -sS -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&ps=500" \
-            -o "$SCAN_OUTPUT_DIR/sonarqube_issues.json"
-          test -s "$SCAN_OUTPUT_DIR/sonarqube_issues.json"
+            -o "$RUN_OUTPUT_DIR/sonarqube_issues.json"
+          test -s "$RUN_OUTPUT_DIR/sonarqube_issues.json"
 
       # ── SCA: Trivy ──
       - name: Trivy scan -> trivy.json
+        shell: bash
         run: |
+          set -euo pipefail
           docker pull aquasec/trivy:latest
           docker run --rm -v "${{ github.workspace }}:/repo" -w /repo aquasec/trivy:latest \
-            fs --format json --output trivy.json .
-          cp trivy.json "$SCAN_OUTPUT_DIR/trivy.json"
-          test -s "$SCAN_OUTPUT_DIR/trivy.json"
+            fs --format json --output /repo/trivy.json .
+          test -s trivy.json
+          cp trivy.json "$RUN_OUTPUT_DIR/trivy.json"
+          test -s "$RUN_OUTPUT_DIR/trivy.json"
 
       # ── DAST: ZAP ──
       - name: Create docker network
-        run: docker network create zapnet || true
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create zapnet || true
 
       - name: Start Juice Shop (Docker)
+        shell: bash
         run: |
+          set -euo pipefail
           docker pull bkimminich/juice-shop
           docker rm -f juice-shop || true
           docker run -d --name juice-shop --network zapnet -p 3000:3000 bkimminich/juice-shop
-          for i in {1..40}; do
+
+          for i in {1..60}; do
             if curl -sSf http://localhost:3000 >/dev/null; then
               echo "Juice Shop ready"
               break
@@ -117,29 +140,40 @@ jobs:
             sleep 2
           done
 
-      - name: ZAP baseline -> zap.json
+      - name: ZAP baseline -> zap.xml
+        shell: bash
         run: |
+          set -euo pipefail
           docker pull ghcr.io/zaproxy/zaproxy:stable
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
             -r zap.html || true
-          cp zap.xml "$SCAN_OUTPUT_DIR/zap.xml"
-          test -s "$SCAN_OUTPUT_DIR/zap.xml"
+
+          test -s zap.xml
+          cp zap.xml "$RUN_OUTPUT_DIR/zap.xml"
+          test -s "$RUN_OUTPUT_DIR/zap.xml"
 
       - name: Stop Juice Shop
         if: always()
-        run: docker rm -f juice-shop || true
+        shell: bash
+        run: |
+          docker rm -f juice-shop || true
 
       # ── Verify all results ──
       - name: List scan results
         if: always()
+        shell: bash
         run: |
-          echo "=== Scan results in $SCAN_OUTPUT_DIR ==="
-          ls -la "$SCAN_OUTPUT_DIR"
+          echo "=== Scan results in $RUN_OUTPUT_DIR ==="
+          ls -la "$RUN_OUTPUT_DIR" || true
 
-
-
-
-          
+      # (Optional) keep artifacts in GitHub for debugging
+      - name: Upload scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-scan-results-${{ github.run_id }}
+          path: |
+            /tmp/devsecops-scans/${{ github.run_id }}/*
