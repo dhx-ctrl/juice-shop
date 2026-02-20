@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           echo "=== Checking local scan results ==="
           ls -la "$SCAN_OUTPUT_DIR"
-          for f in sonarqube_issues.json trivy.json zap.json; do
+          for f in sonarqube_issues.json trivy.json zap.xml; do
             test -s "$SCAN_OUTPUT_DIR/$f" || (echo "ERROR: missing/empty $f" && exit 1)
             echo "OK: $f ($(wc -c < "$SCAN_OUTPUT_DIR/$f") bytes)"
           done
@@ -78,7 +78,7 @@ jobs:
             -F "minimum_severity=Low" \
             -F "product=${DOJO_PRODUCT_ID}" \
             -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${SCAN_OUTPUT_DIR}/zap.json;type=application/json"
+            -F "file=@${SCAN_OUTPUT_DIR}/zap.xml;type=application/json"
 
       - name: Cleanup scan files
         if: always()
