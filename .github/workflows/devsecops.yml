@@ -15,7 +15,6 @@ jobs:
       SONAR_HOST_URL: "http://localhost:9000"
       SONAR_PROJECT_KEY: "juice-shop"
 
-      # Base folder (CD will use run_id subfolder)
       SCAN_BASE_DIR: "/tmp/devsecops-scans"
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
 
@@ -67,16 +66,23 @@ jobs:
           set -euo pipefail
           npm install
 
-      # ── Install sonar-scanner (no sudo) ──
-      - name: Install sonar-scanner (no sudo)
+      # ── Install sonar-scanner (fixed PATH) ──
+      - name: Install sonar-scanner (no sudo, fixed PATH)
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v sonar-scanner >/dev/null 2>&1; then
-            curl -sSLo /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+
+          # Download/unzip if not already present
+          if ! ls -d /tmp/sonar-scanner-* >/dev/null 2>&1; then
+            curl -sSLo /tmp/sonar-scanner.zip \
+              https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
             unzip -oq /tmp/sonar-scanner.zip -d /tmp
-            echo "/tmp/sonar-scanner-6.2.1.4610-linux-x64/bin" >> $GITHUB_PATH
           fi
+
+          SCANNER_DIR="$(ls -d /tmp/sonar-scanner-* | head -n 1)"
+          export PATH="$SCANNER_DIR/bin:$PATH"       # works in THIS step
+          echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"  # persists to NEXT steps
+
           sonar-scanner --version
 
       # ── SAST: SonarQube ──
@@ -169,7 +175,7 @@ jobs:
           echo "=== Scan results in $RUN_OUTPUT_DIR ==="
           ls -la "$RUN_OUTPUT_DIR" || true
 
-      # (Optional) keep artifacts in GitHub for debugging
+      # Optional: keep artifacts in GitHub
       - name: Upload scan reports
         if: always()
         uses: actions/upload-artifact@v4
