@@ -14,73 +14,27 @@ jobs:
     env:
       DOJO_URL: "http://localhost:8080"
       DOJO_PRODUCT_ID: "1"
-
-      # Use engagement ID (recommended; stable)
       DOJO_ENGAGEMENT_ID: "1"
 
-      # Exact scan types (must match DefectDojo dropdown)
+      # Must match DefectDojo dropdown exactly
       SCAN_TYPE_SONAR: "SonarQube API Import"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
 
-      # Match the CI run folder
+      # Folder created by CI (per-run)
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
 
     steps:
-      - name: Verify scan files exist
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Import scans via script
         shell: bash
+        env:
+          DOJO_TOKEN: ${{ secrets.DOJO_TOKEN }}
         run: |
           set -euo pipefail
-          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
-          ls -la "$RUN_OUTPUT_DIR"
-
-          test -s "$RUN_OUTPUT_DIR/sonarqube_issues.json"
-          test -s "$RUN_OUTPUT_DIR/trivy.json"
-          test -s "$RUN_OUTPUT_DIR/zap.xml"
-
-          echo "All required scan files exist."
-
-      - name: Import SonarQube -> DefectDojo
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_SONAR}" \
-            -F "minimum_severity=Info" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${RUN_OUTPUT_DIR}/sonarqube_issues.json;type=application/json"
-
-      - name: Import Trivy -> DefectDojo
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_TRIVY}" \
-            -F "minimum_severity=Low" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${RUN_OUTPUT_DIR}/trivy.json;type=application/json"
-
-      - name: Import ZAP -> DefectDojo (XML)
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-            -H "Authorization: Token ${{ secrets.DOJO_TOKEN }}" \
-            -F "active=true" \
-            -F "verified=false" \
-            -F "scan_type=${SCAN_TYPE_ZAP}" \
-            -F "minimum_severity=Low" \
-            -F "product=${DOJO_PRODUCT_ID}" \
-            -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-            -F "file=@${RUN_OUTPUT_DIR}/zap.xml;type=text/xml"
+          bash .github/scripts/import_scans.sh
 
       - name: Cleanup run folder
         if: always()
