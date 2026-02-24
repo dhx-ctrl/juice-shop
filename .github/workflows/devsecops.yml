@@ -72,7 +72,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Download/unzip if not already present
           if ! ls -d /tmp/sonar-scanner-* >/dev/null 2>&1; then
             curl -sSLo /tmp/sonar-scanner.zip \
               https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
@@ -80,8 +79,8 @@ jobs:
           fi
 
           SCANNER_DIR="$(ls -d /tmp/sonar-scanner-* | head -n 1)"
-          export PATH="$SCANNER_DIR/bin:$PATH"       # works in THIS step
-          echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"  # persists to NEXT steps
+          export PATH="$SCANNER_DIR/bin:$PATH"
+          echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"
 
           sonar-scanner --version
 
@@ -111,16 +110,27 @@ jobs:
             -o "$RUN_OUTPUT_DIR/sonarqube_issues.json"
           test -s "$RUN_OUTPUT_DIR/sonarqube_issues.json"
 
-      # ── SCA: Trivy ──
-      - name: Trivy scan -> trivy.json
+      # ── SCA: Trivy (ONE SINGLE FILE, IMAGE SCAN) ──
+      - name: Trivy scan (image) -> trivy.json
         shell: bash
         run: |
           set -euo pipefail
+
+          # Scan the Juice Shop image (usually much richer than filesystem scan)
+          docker pull bkimminich/juice-shop
           docker pull aquasec/trivy:latest
-          docker run --rm -v "${{ github.workspace }}:/repo" -w /repo aquasec/trivy:latest \
-            fs --format json --output /repo/trivy.json .
-          test -s trivy.json
-          cp trivy.json "$RUN_OUTPUT_DIR/trivy.json"
+
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUN_OUTPUT_DIR:/out" \
+            aquasec/trivy:latest \
+            image \
+            --scanners vuln,misconfig,secret \
+            --severity LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --output /out/trivy.json \
+            bkimminich/juice-shop
+
           test -s "$RUN_OUTPUT_DIR/trivy.json"
 
       # ── DAST: ZAP ──
@@ -146,13 +156,14 @@ jobs:
             sleep 2
           done
 
-      - name: ZAP baseline -> zap.xml
+      # NOTE: Full scan = active scanning -> usually more findings
+      - name: ZAP full scan -> zap.xml
         shell: bash
         run: |
           set -euo pipefail
           docker pull ghcr.io/zaproxy/zaproxy:stable
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
             -r zap.html || true
