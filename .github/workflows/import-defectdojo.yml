@@ -15,8 +15,6 @@ jobs:
       DOJO_URL: "http://localhost:8080"
       DOJO_PRODUCT_ID: "1"
       DOJO_ENGAGEMENT_ID: "1"
-
-      # Must match DefectDojo dropdown exactly
       SCAN_TYPE_SONAR: "SonarQube API Import"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
