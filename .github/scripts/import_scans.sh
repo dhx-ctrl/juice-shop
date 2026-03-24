@@ -15,8 +15,7 @@ required_vars=(
 )
 
 for v in "${required_vars[@]}"; do
-  if [[ -z "
-${!v:-}" ]]; then
+  if [[ -z ""${!v:-}" ]]; then
     echo "ERROR: Missing env var: $v"
     exit 1
   fi
@@ -54,7 +53,8 @@ get_or_create_engagement() {
   encoded_name=$(urlencode "$DOJO_ENGAGEMENT_NAME")
 
   local existing
-  existing=$(curl -sS -H "Authorization: Token ${DOJO_TOKEN}" \
+  existing=$(curl -sS -H "Authorization: Token \
+    ${DOJO_TOKEN}" \
     "${DOJO_URL}/api/v2/engagements/?name=${encoded_name}&product=${DOJO_PRODUCT_ID}&limit=1")
 
   local engagement_id
@@ -68,7 +68,8 @@ get_or_create_engagement() {
   local encoded_lead
   encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
   local lead_payload
-  lead_payload=$(curl -sS -H "Authorization: Token ${DOJO_TOKEN}" \
+  lead_payload=$(curl -sS -H "Authorization: Token \
+    ${DOJO_TOKEN}" \
     "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1")
 
   local lead_id
@@ -103,7 +104,8 @@ PY
 
   local created
   created=$(curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/engagements/" \
-    -H "Authorization: Token ${DOJO_TOKEN}" \
+    -H "Authorization: Token \
+    ${DOJO_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload")
 
@@ -143,7 +145,8 @@ import_scan () {
 
   echo "Importing: ${scan_type} -> ${file_path}"
   curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
-    -H "Authorization: Token ${DOJO_TOKEN}" \
+    -H "Authorization: Token \
+    ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
     -F "scan_type=${scan_type}" \
@@ -151,7 +154,7 @@ import_scan () {
     -F "product=${DOJO_PRODUCT_ID}" \
     -F "engagement=${DOJO_ENGAGEMENT_ID}" \
     -F "file=@${file_path};type=${mime}"
-}
+done
 
 # Imports
 import_scan "${SCAN_TYPE_SEMGREP}" "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
