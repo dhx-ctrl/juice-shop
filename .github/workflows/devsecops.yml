@@ -2,19 +2,16 @@ name: DevSecOps - Security Scans (CI)
 
 on:
   push:
-    branches: ["main"]
+    branches: ["master"]
   pull_request:
   workflow_dispatch:
 
 jobs:
   security-scans:
     runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
-      SONAR_HOST_URL: "http://localhost:9000"
-      SONAR_PROJECT_KEY: "juice-shop"
-
       SCAN_BASE_DIR: "/tmp/devsecops-scans"
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
 
@@ -31,92 +28,49 @@ jobs:
           rm -f "$RUN_OUTPUT_DIR"/* || true
           echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
 
-      # ── Ensure SonarQube is running ──
-      - name: Ensure SonarQube is running
+      # ── SAST: Semgrep (full scan) ──
+      - name: Semgrep full scan -> semgrep.json
         shell: bash
         run: |
           set -euo pipefail
+          docker pull returntocorp/semgrep:latest
+          docker run --rm \
+            -v "${{ github.workspace }}:/src:ro" \
+            -v "$RUN_OUTPUT_DIR:/out" \
+            returntocorp/semgrep:latest \
+            semgrep scan \
+              --config=auto \
+              --config=p/ci \
+              --config=p/security-audit \
+              --json \
+              --output /out/semgrep.json \
+              /src
 
-          if ! docker ps --format '{{.Names}}' | grep -q '^sonarqube$'; then
-            docker rm -f sonarqube || true
-            docker volume create sonarqube_data || true
-            docker volume create sonarqube_extensions || true
-            docker run -d --name sonarqube -p 9000:9000 \
-              -v sonarqube_data:/opt/sonarqube/data \
-              -v sonarqube_extensions:/opt/sonarqube/extensions \
-              sonarqube:lts
-          fi
+          test -s "$RUN_OUTPUT_DIR/semgrep.json"
 
-          for i in {1..80}; do
-            status="$(curl -sS "$SONAR_HOST_URL/api/system/health" | grep -o '"status":"[^"]*"' || true)"
-            echo "SonarQube health: $status"
-            echo "$status" | grep -q 'GREEN\|YELLOW' && break
-            sleep 3
-          done
-
-      # ── Node setup ──
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install deps
+      # ── SCA: Trivy (filesystem + image, full scan) ──
+      - name: Trivy full scan (filesystem) -> trivy_fs.json
         shell: bash
         run: |
           set -euo pipefail
-          npm install
+          docker pull aquasec/trivy:latest
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace:ro" \
+            -v "$RUN_OUTPUT_DIR:/out" \
+            aquasec/trivy:latest \
+            fs \
+            --scanners vuln,misconfig,secret,license \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --output /out/trivy_fs.json \
+            /workspace
 
-      # ── Install sonar-scanner (fixed PATH) ──
-      - name: Install sonar-scanner (no sudo, fixed PATH)
+          test -s "$RUN_OUTPUT_DIR/trivy_fs.json"
+
+      - name: Trivy full scan (image) -> trivy_image.json
         shell: bash
         run: |
           set -euo pipefail
-
-          if ! ls -d /tmp/sonar-scanner-* >/dev/null 2>&1; then
-            curl -sSLo /tmp/sonar-scanner.zip \
-              https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
-            unzip -oq /tmp/sonar-scanner.zip -d /tmp
-          fi
-
-          SCANNER_DIR="$(ls -d /tmp/sonar-scanner-* | head -n 1)"
-          export PATH="$SCANNER_DIR/bin:$PATH"
-          echo "$SCANNER_DIR/bin" >> "$GITHUB_PATH"
-
-          sonar-scanner --version
-
-      # ── SAST: SonarQube ──
-      - name: SonarQube scan
-        shell: bash
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          set -euo pipefail
-          sonar-scanner \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.login="$SONAR_TOKEN" \
-            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-            -Dsonar.projectName="Juice Shop" \
-            -Dsonar.sources="." \
-            -Dsonar.exclusions="**/node_modules/**,**/dist/**,**/build/**"
-
-      - name: Export SonarQube issues (API Import JSON)
-        shell: bash
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          set -euo pipefail
-          curl -sS -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&ps=500" \
-            -o "$RUN_OUTPUT_DIR/sonarqube_issues.json"
-          test -s "$RUN_OUTPUT_DIR/sonarqube_issues.json"
-
-      # ── SCA: Trivy (ONE SINGLE FILE, IMAGE SCAN) ──
-      - name: Trivy scan (image) -> trivy.json
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Scan the Juice Shop image (usually much richer than filesystem scan)
           docker pull bkimminich/juice-shop
           docker pull aquasec/trivy:latest
 
@@ -126,12 +80,12 @@ jobs:
             aquasec/trivy:latest \
             image \
             --scanners vuln,misconfig,secret \
-            --severity LOW,MEDIUM,HIGH,CRITICAL \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
             --format json \
-            --output /out/trivy.json \
+            --output /out/trivy_image.json \
             bkimminich/juice-shop
 
-          test -s "$RUN_OUTPUT_DIR/trivy.json"
+          test -s "$RUN_OUTPUT_DIR/trivy_image.json"
 
       # ── DAST: ZAP ──
       - name: Create docker network
