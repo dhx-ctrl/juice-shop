@@ -53,11 +53,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker pull aquasec/trivy:latest
+          docker pull ghcr.io/aquasecurity/trivy:0.69.3
           docker run --rm \
             -v "${{ github.workspace }}:/workspace:ro" \
             -v "$RUN_OUTPUT_DIR:/out" \
-            aquasec/trivy:latest \
+            ghcr.io/aquasecurity/trivy:0.69.3 \
             fs \
             --scanners vuln,misconfig,secret,license \
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
@@ -72,12 +72,12 @@ jobs:
         run: |
           set -euo pipefail
           docker pull bkimminich/juice-shop
-          docker pull aquasec/trivy:latest
+          docker pull ghcr.io/aquasecurity/trivy:0.69.3
 
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$RUN_OUTPUT_DIR:/out" \
-            aquasec/trivy:latest \
+            ghcr.io/aquasecurity/trivy:0.69.3 \
             image \
             --scanners vuln,misconfig,secret \
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
