@@ -122,8 +122,8 @@ jobs:
             -v ${{ github.workspace }}:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py \
             -t http://juice-shop:3000 \
-            -x zap.xml \
-            -r zap.html || true
+            -x /zap/wrk/zap.xml \
+            -r /zap/wrk/zap.html || true
 
           test -s zap.xml
           cp zap.xml "$RUN_OUTPUT_DIR/zap.xml"
