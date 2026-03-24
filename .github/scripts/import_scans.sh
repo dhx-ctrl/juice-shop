@@ -145,6 +145,7 @@ import_scan () {
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
+    -F "reimport=true" \
     -F "scan_type=${scan_type}" \
     -F "minimum_severity=${min_sev}" \
     -F "product=${DOJO_PRODUCT_ID}" \
