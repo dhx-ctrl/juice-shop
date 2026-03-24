@@ -141,7 +141,7 @@ import_scan () {
   local mime="$4"
 
   echo "Importing: ${scan_type} -> ${file_path}"
-  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+  if ! curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
@@ -150,7 +150,18 @@ import_scan () {
     -F "minimum_severity=${min_sev}" \
     -F "product=${DOJO_PRODUCT_ID}" \
     -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-    -F "file=@${file_path};type=${mime}"
+    -F "file=@${file_path};type=${mime}"; then
+    echo "Reimport request failed for ${scan_type}. Retrying as a standard import..."
+    curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      -F "active=true" \
+      -F "verified=false" \
+      -F "scan_type=${scan_type}" \
+      -F "minimum_severity=${min_sev}" \
+      -F "product=${DOJO_PRODUCT_ID}" \
+      -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+      -F "file=@${file_path};type=${mime}"
+  fi
 }
 
 # Imports
