@@ -116,7 +116,10 @@ jobs:
         run: |
           set -euo pipefail
           docker pull ghcr.io/zaproxy/zaproxy:stable
-          docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
+          docker run --rm --network zapnet \
+            -e JAVA_OPTS="-Xmx1024m" \
+            --memory=1500m \
+            -v ${{ github.workspace }}:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
