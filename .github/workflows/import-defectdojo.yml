@@ -14,10 +14,11 @@ jobs:
     env:
       DOJO_URL: "http://localhost:8080"
       DOJO_PRODUCT_ID: "1"
-      DOJO_ENGAGEMENT_ID: "1"
-      SCAN_TYPE_SONAR: "SonarQube API Import"
+      DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
+      DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
       SCAN_TYPE_TRIVY: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
+      SCAN_TYPE_SEMGREP: "Semgrep JSON Report"
 
       # Folder created by CI (per-run)
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
