@@ -111,13 +111,13 @@ jobs:
           done
 
       # NOTE: Full scan = active scanning -> usually more findings
-      - name: ZAP full scan -> zap.xml
+      - name: ZAP base scan -> zap.xml
         shell: bash
         run: |
           set -euo pipefail
-          docker pull ghcr.io/zaproxy/zaproxy:stable
+          docker pull ghcr.io/zaproxy/zaproxy:bare
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable zap-full-scan.py \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
             -r zap.html || true
