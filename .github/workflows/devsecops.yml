@@ -116,7 +116,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy@sha256:6a109ec5fedfe97037c5c4297de795a881523fb7dd30080577090e441199c2c9 \ 
+            ghcr.io/zaproxy/zaproxy@sha256:6a109ec5fedfe97037c5c4297de795a881523fb7dd30080577090e441199c2c9 \
             zap-full-scan.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
