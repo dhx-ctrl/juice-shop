@@ -117,7 +117,8 @@ jobs:
           set -euo pipefail
           docker pull ghcr.io/zaproxy/zaproxy:bare
           docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            ghcr.io/zaproxy/zaproxy:20260209-stable@sha256:6a109ec5fedfe97037c5c4297de795a881523fb7dd30080577090e441199c2c9 \ 
+            zap-full-scan.py \
             -t http://juice-shop:3000 \
             -x zap.xml \
             -r zap.html || true
