@@ -4,7 +4,9 @@ set -euo pipefail
 required_vars=(
   DOJO_URL DOJO_TOKEN DOJO_PRODUCT_ID
   DOJO_ENGAGEMENT_NAME DOJO_ENGAGEMENT_LEAD_USERNAME
-  SCAN_TYPE_TRIVY SCAN_TYPE_ZAP SCAN_TYPE_SEMGREP
+  SCAN_TYPE_TRIVY_FS SCAN_TYPE_TRIVY_IMAGE SCAN_TYPE_ZAP SCAN_TYPE_SEMGREP
+  BUILD_ID COMMIT_HASH BRANCH_TAG REPO_URI SCM_SERVER BUILD_SERVER
+  ORCHESTRATION_ENGINE TEST_STRATEGY
   RUN_OUTPUT_DIR
 )
 
@@ -80,10 +82,38 @@ get_or_create_engagement() {
   engagement_id=$(echo "$existing" | extract_first_id)
 
   if [[ -n "$engagement_id" ]]; then
+    # Patch the existing engagement with latest metadata
+    echo "Updating existing engagement ${engagement_id} metadata..."
+    local patch_payload
+    patch_payload=$(
+      BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
+      REPO_URI="$REPO_URI" SCM_SERVER="$SCM_SERVER" BUILD_SERVER="$BUILD_SERVER" \
+      ORCHESTRATION_ENGINE="$ORCHESTRATION_ENGINE" TEST_STRATEGY="$TEST_STRATEGY" \
+      python3 -c "
+import json, os
+print(json.dumps({
+    'build_id':                    os.environ['BUILD_ID'],
+    'commit_hash':                 os.environ['COMMIT_HASH'],
+    'branch_tag':                  os.environ['BRANCH_TAG'],
+    'source_code_management_uri':  os.environ['REPO_URI'],
+    'source_code_management_server': os.environ['SCM_SERVER'],
+    'build_server':                os.environ['BUILD_SERVER'],
+    'orchestration_engine':        os.environ['ORCHESTRATION_ENGINE'],
+    'test_strategy':               os.environ['TEST_STRATEGY'],
+}))
+")
+    curl --fail-with-body -sS -X PATCH \
+      "${DOJO_URL}/api/v2/engagements/${engagement_id}/" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$patch_payload" > /dev/null \
+      || { echo "ERROR: engagement metadata patch failed" >&2; exit 1; }
+
     echo "$engagement_id"
     return 0
   fi
 
+  # Resolve lead user ID
   local encoded_lead
   encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
 
@@ -106,16 +136,29 @@ get_or_create_engagement() {
   target_end=$(date -u -d "+7 days" +%Y-%m-%d)
 
   local payload
-  payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 -c "
+  payload=$(
+    TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" \
+    BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
+    REPO_URI="$REPO_URI" SCM_SERVER="$SCM_SERVER" BUILD_SERVER="$BUILD_SERVER" \
+    ORCHESTRATION_ENGINE="$ORCHESTRATION_ENGINE" TEST_STRATEGY="$TEST_STRATEGY" \
+    python3 -c "
 import json, os
 print(json.dumps({
-    'name': os.environ['DOJO_ENGAGEMENT_NAME'],
-    'product': int(os.environ['DOJO_PRODUCT_ID']),
-    'status': 'In Progress',
-    'engagement_type': 'CI/CD',
-    'target_start': os.environ['TARGET_START'],
-    'target_end': os.environ['TARGET_END'],
-    'lead': int(os.environ['LEAD_ID']),
+    'name':                        os.environ['DOJO_ENGAGEMENT_NAME'],
+    'product':                     int(os.environ['DOJO_PRODUCT_ID']),
+    'status':                      'In Progress',
+    'engagement_type':             'CI/CD',
+    'target_start':                os.environ['TARGET_START'],
+    'target_end':                  os.environ['TARGET_END'],
+    'lead':                        int(os.environ['LEAD_ID']),
+    'build_id':                    os.environ['BUILD_ID'],
+    'commit_hash':                 os.environ['COMMIT_HASH'],
+    'branch_tag':                  os.environ['BRANCH_TAG'],
+    'source_code_management_uri':  os.environ['REPO_URI'],
+    'source_code_management_server': os.environ['SCM_SERVER'],
+    'build_server':                os.environ['BUILD_SERVER'],
+    'orchestration_engine':        os.environ['ORCHESTRATION_ENGINE'],
+    'test_strategy':               os.environ['TEST_STRATEGY'],
 }))
 ")
 
@@ -163,7 +206,7 @@ import_scan() {
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
-    -F "reimport=true" \
+    -F "close_old_findings=false" \
     -F "scan_type=${scan_type}" \
     -F "minimum_severity=${min_sev}" \
     -F "product=${DOJO_PRODUCT_ID}" \
@@ -171,9 +214,9 @@ import_scan() {
     -F "file=@${file_path};type=${mime}"
 }
 
-import_scan "${SCAN_TYPE_SEMGREP}" "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
-import_scan "${SCAN_TYPE_ZAP}"     "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
+import_scan "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
+import_scan "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
+import_scan "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
+import_scan "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
 
 echo "All imports completed successfully."
