@@ -16,9 +16,20 @@ jobs:
       DOJO_PRODUCT_ID: "1"
       DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
       DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
-      SCAN_TYPE_TRIVY: "Trivy Scan"
+      SCAN_TYPE_TRIVY_FS: "Trivy Scan"
+      SCAN_TYPE_TRIVY_IMAGE: "Trivy Operator Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
       SCAN_TYPE_SEMGREP: "Semgrep JSON Report"
+
+      # CI/CD metadata for DefectDojo engagement
+      BUILD_ID: ${{ github.event.workflow_run.id }}
+      COMMIT_HASH: ${{ github.event.workflow_run.head_sha }}
+      BRANCH_TAG: ${{ github.event.workflow_run.head_branch }}
+      REPO_URI: "${{ github.server_url }}/${{ github.repository }}"
+      SCM_SERVER: ${{ github.server_url }}
+      BUILD_SERVER: "GitHub Actions"
+      ORCHESTRATION_ENGINE: "GitHub Actions"
+      TEST_STRATEGY: "https://github.com/${{ github.repository }}/actions"
 
       # Folder created by CI (per-run)
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
