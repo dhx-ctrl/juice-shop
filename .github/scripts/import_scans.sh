@@ -5,8 +5,7 @@ required_vars=(
   DOJO_URL DOJO_TOKEN DOJO_PRODUCT_ID
   DOJO_ENGAGEMENT_NAME DOJO_ENGAGEMENT_LEAD_USERNAME
   SCAN_TYPE_TRIVY_FS SCAN_TYPE_TRIVY_IMAGE SCAN_TYPE_ZAP SCAN_TYPE_SEMGREP
-  BUILD_ID COMMIT_HASH BRANCH_TAG REPO_URI SCM_SERVER BUILD_SERVER
-  ORCHESTRATION_ENGINE TEST_STRATEGY
+  BUILD_ID COMMIT_HASH BRANCH_TAG REPO_URI TEST_STRATEGY
   RUN_OUTPUT_DIR
 )
 
@@ -56,6 +55,24 @@ print(payload.get('id', ''))
 "
 }
 
+# Build the metadata JSON object (fields that accept plain strings/URLs only).
+# build_server, orchestration_engine, source_code_management_server are FK
+# integer IDs in DefectDojo and must be set via the UI — excluded here.
+metadata_json() {
+  BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
+  REPO_URI="$REPO_URI" TEST_STRATEGY="$TEST_STRATEGY" \
+  python3 -c "
+import json, os
+print(json.dumps({
+    'build_id':                   os.environ['BUILD_ID'],
+    'commit_hash':                os.environ['COMMIT_HASH'],
+    'branch_tag':                 os.environ['BRANCH_TAG'],
+    'source_code_management_uri': os.environ['REPO_URI'],
+    'test_strategy':              os.environ['TEST_STRATEGY'],
+}))
+"
+}
+
 echo "Checking DefectDojo connectivity..."
 http_code=$(curl -o /tmp/dojo_check.txt -sS -w "%{http_code}" \
   -H "Authorization: Token ${DOJO_TOKEN}" \
@@ -82,33 +99,15 @@ get_or_create_engagement() {
   engagement_id=$(echo "$existing" | extract_first_id)
 
   if [[ -n "$engagement_id" ]]; then
-    # Patch the existing engagement with latest metadata
-    echo "Updating existing engagement ${engagement_id} metadata..."
+    echo "Updating existing engagement ${engagement_id} metadata..." >&2
     local patch_payload
-    patch_payload=$(
-      BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
-      REPO_URI="$REPO_URI" SCM_SERVER="$SCM_SERVER" BUILD_SERVER="$BUILD_SERVER" \
-      ORCHESTRATION_ENGINE="$ORCHESTRATION_ENGINE" TEST_STRATEGY="$TEST_STRATEGY" \
-      python3 -c "
-import json, os
-print(json.dumps({
-    'build_id':                    os.environ['BUILD_ID'],
-    'commit_hash':                 os.environ['COMMIT_HASH'],
-    'branch_tag':                  os.environ['BRANCH_TAG'],
-    'source_code_management_uri':  os.environ['REPO_URI'],
-    'source_code_management_server': os.environ['SCM_SERVER'],
-    'build_server':                os.environ['BUILD_SERVER'],
-    'orchestration_engine':        os.environ['ORCHESTRATION_ENGINE'],
-    'test_strategy':               os.environ['TEST_STRATEGY'],
-}))
-")
+    patch_payload=$(metadata_json)
     curl --fail-with-body -sS -X PATCH \
       "${DOJO_URL}/api/v2/engagements/${engagement_id}/" \
       -H "Authorization: Token ${DOJO_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$patch_payload" > /dev/null \
       || { echo "ERROR: engagement metadata patch failed" >&2; exit 1; }
-
     echo "$engagement_id"
     return 0
   fi
@@ -139,26 +138,22 @@ print(json.dumps({
   payload=$(
     TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" \
     BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
-    REPO_URI="$REPO_URI" SCM_SERVER="$SCM_SERVER" BUILD_SERVER="$BUILD_SERVER" \
-    ORCHESTRATION_ENGINE="$ORCHESTRATION_ENGINE" TEST_STRATEGY="$TEST_STRATEGY" \
+    REPO_URI="$REPO_URI" TEST_STRATEGY="$TEST_STRATEGY" \
     python3 -c "
 import json, os
 print(json.dumps({
-    'name':                        os.environ['DOJO_ENGAGEMENT_NAME'],
-    'product':                     int(os.environ['DOJO_PRODUCT_ID']),
-    'status':                      'In Progress',
-    'engagement_type':             'CI/CD',
-    'target_start':                os.environ['TARGET_START'],
-    'target_end':                  os.environ['TARGET_END'],
-    'lead':                        int(os.environ['LEAD_ID']),
-    'build_id':                    os.environ['BUILD_ID'],
-    'commit_hash':                 os.environ['COMMIT_HASH'],
-    'branch_tag':                  os.environ['BRANCH_TAG'],
-    'source_code_management_uri':  os.environ['REPO_URI'],
-    'source_code_management_server': os.environ['SCM_SERVER'],
-    'build_server':                os.environ['BUILD_SERVER'],
-    'orchestration_engine':        os.environ['ORCHESTRATION_ENGINE'],
-    'test_strategy':               os.environ['TEST_STRATEGY'],
+    'name':                       os.environ['DOJO_ENGAGEMENT_NAME'],
+    'product':                    int(os.environ['DOJO_PRODUCT_ID']),
+    'status':                     'In Progress',
+    'engagement_type':            'CI/CD',
+    'target_start':               os.environ['TARGET_START'],
+    'target_end':                 os.environ['TARGET_END'],
+    'lead':                       int(os.environ['LEAD_ID']),
+    'build_id':                   os.environ['BUILD_ID'],
+    'commit_hash':                os.environ['COMMIT_HASH'],
+    'branch_tag':                 os.environ['BRANCH_TAG'],
+    'source_code_management_uri': os.environ['REPO_URI'],
+    'test_strategy':              os.environ['TEST_STRATEGY'],
 }))
 ")
 
