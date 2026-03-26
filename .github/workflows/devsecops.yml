@@ -111,11 +111,13 @@ jobs:
           done
 
       # NOTE: Base SCAN , Full scan has an issue
-      - name: ZAP base scan -> zap.xml
+      - name: ZAP baseline scan -> zap.xml
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
+          mkdir -p "$RUN_OUTPUT_DIR"
+          
+          docker run --rm --network zapnet -v "${{ github.workspace }}:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy:bare \
             zap-baseline.py \
             -t http://juice-shop:3000 \
