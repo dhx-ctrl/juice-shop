@@ -16,15 +16,15 @@ for v in "${required_vars[@]}"; do
 done
 
 urlencode() {
-  python3 - "$1" <<'PY'
+  python3 -c "
 import sys
 from urllib.parse import quote
 print(quote(sys.argv[1]))
-PY
+" "$1"
 }
 
 extract_first_id() {
-  python3 - <<'PY'
+  python3 -c "
 import json, sys
 raw = sys.stdin.read().strip()
 if not raw:
@@ -32,15 +32,15 @@ if not raw:
 try:
     payload = json.loads(raw)
 except json.JSONDecodeError as e:
-    print(f"ERROR: invalid JSON from API: {e}\nRaw response: {raw[:300]}", file=sys.stderr)
+    print('ERROR: invalid JSON: ' + str(e), file=sys.stderr)
     sys.exit(1)
-results = payload.get("results") or []
-print(results[0].get("id", "") if results else "")
-PY
+results = payload.get('results') or []
+print(results[0].get('id', '') if results else '')
+"
 }
 
 extract_id() {
-  python3 - <<'PY'
+  python3 -c "
 import json, sys
 raw = sys.stdin.read().strip()
 if not raw:
@@ -48,10 +48,10 @@ if not raw:
 try:
     payload = json.loads(raw)
 except json.JSONDecodeError as e:
-    print(f"ERROR: invalid JSON from API: {e}\nRaw response: {raw[:300]}", file=sys.stderr)
+    print('ERROR: invalid JSON: ' + str(e), file=sys.stderr)
     sys.exit(1)
-print(payload.get("id", ""))
-PY
+print(payload.get('id', ''))
+"
 }
 
 echo "Checking DefectDojo connectivity..."
@@ -93,12 +93,8 @@ get_or_create_engagement() {
     "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1") \
     || { echo "ERROR: user lookup failed" >&2; exit 1; }
 
-  echo "DEBUG lead_payload: $lead_payload" >&2
-
   local lead_id
   lead_id=$(echo "$lead_payload" | extract_first_id)
-
-  echo "DEBUG lead_id: $lead_id" >&2
 
   if [[ -z "$lead_id" ]]; then
     echo "ERROR: Could not find DefectDojo user: ${DOJO_ENGAGEMENT_LEAD_USERNAME}" >&2
@@ -110,19 +106,18 @@ get_or_create_engagement() {
   target_end=$(date -u -d "+7 days" +%Y-%m-%d)
 
   local payload
-  payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 - <<'PY'
+  payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 -c "
 import json, os
 print(json.dumps({
-    "name": os.environ["DOJO_ENGAGEMENT_NAME"],
-    "product": int(os.environ["DOJO_PRODUCT_ID"]),
-    "status": "In Progress",
-    "engagement_type": "CI/CD",
-    "target_start": os.environ["TARGET_START"],
-    "target_end": os.environ["TARGET_END"],
-    "lead": int(os.environ["LEAD_ID"]),
+    'name': os.environ['DOJO_ENGAGEMENT_NAME'],
+    'product': int(os.environ['DOJO_PRODUCT_ID']),
+    'status': 'In Progress',
+    'engagement_type': 'CI/CD',
+    'target_start': os.environ['TARGET_START'],
+    'target_end': os.environ['TARGET_END'],
+    'lead': int(os.environ['LEAD_ID']),
 }))
-PY
-)
+")
 
   local created
   created=$(curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/engagements/" \
@@ -145,6 +140,7 @@ if [[ -z "$DOJO_ENGAGEMENT_ID" ]]; then
   exit 1
 fi
 export DOJO_ENGAGEMENT_ID
+echo "Engagement ID: ${DOJO_ENGAGEMENT_ID}"
 
 ls -la "${RUN_OUTPUT_DIR}"
 
