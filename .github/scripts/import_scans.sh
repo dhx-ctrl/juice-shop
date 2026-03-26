@@ -162,6 +162,62 @@ print(json.dumps({
   echo "$created" | extract_id
 }
 
+# Returns the test ID if a test already exists for this scan_type + engagement,
+# empty string otherwise.
+find_existing_test() {
+  local scan_type="$1"
+  local encoded_type
+  encoded_type=$(urlencode "$scan_type")
+
+  local result
+  result=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/tests/?engagement=${DOJO_ENGAGEMENT_ID}&test_type_name=${encoded_type}&limit=1") \
+    || { echo "ERROR: test lookup failed for ${scan_type}" >&2; exit 1; }
+
+  echo "$result" | extract_first_id
+}
+
+# First run for a scan type  → import-scan   (creates the test)
+# Subsequent runs            → reimport-scan  (updates findings in place,
+#                                              auto-mitigates fixed vulns)
+import_or_reimport() {
+  local scan_type="$1"
+  local file_path="$2"
+  local min_sev="$3"
+  local mime="$4"
+
+  local test_id
+  test_id=$(find_existing_test "$scan_type")
+
+  if [[ -n "$test_id" ]]; then
+    echo "Reimporting (test ${test_id}): ${scan_type} -> ${file_path}"
+    curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/reimport-scan/" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      -F "active=true" \
+      -F "verified=false" \
+      -F "close_old_findings=true" \
+      -F "test=${test_id}" \
+      -F "scan_type=${scan_type}" \
+      -F "minimum_severity=${min_sev}" \
+      -F "product=${DOJO_PRODUCT_ID}" \
+      -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+      -F "file=@${file_path};type=${mime}"
+  else
+    echo "Importing (first run): ${scan_type} -> ${file_path}"
+    curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      -F "active=true" \
+      -F "verified=false" \
+      -F "close_old_findings=false" \
+      -F "scan_type=${scan_type}" \
+      -F "minimum_severity=${min_sev}" \
+      -F "product=${DOJO_PRODUCT_ID}" \
+      -F "engagement=${DOJO_ENGAGEMENT_ID}" \
+      -F "file=@${file_path};type=${mime}"
+  fi
+}
+
 echo "RUN_OUTPUT_DIR=${RUN_OUTPUT_DIR}"
 if [[ ! -d "${RUN_OUTPUT_DIR}" ]]; then
   echo "ERROR: RUN_OUTPUT_DIR does not exist: ${RUN_OUTPUT_DIR}"
@@ -186,31 +242,9 @@ for f in semgrep.json trivy_fs.json trivy_image.json zap.xml; do
   echo "OK: ${f} ($(wc -c < "${RUN_OUTPUT_DIR}/${f}") bytes)"
 done
 
-# Uses /reimport-scan/ so DefectDojo matches the existing test by scan_type +
-# engagement and updates findings in place rather than creating duplicates.
-# Findings no longer present in the latest scan are auto-mitigated.
-reimport_scan() {
-  local scan_type="$1"
-  local file_path="$2"
-  local min_sev="$3"
-  local mime="$4"
+import_or_reimport "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
+import_or_reimport "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
+import_or_reimport "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
+import_or_reimport "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
 
-  echo "Reimporting: ${scan_type} -> ${file_path}"
-  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/reimport-scan/" \
-    -H "Authorization: Token ${DOJO_TOKEN}" \
-    -F "active=true" \
-    -F "verified=false" \
-    -F "close_old_findings=true" \
-    -F "scan_type=${scan_type}" \
-    -F "minimum_severity=${min_sev}" \
-    -F "product=${DOJO_PRODUCT_ID}" \
-    -F "engagement=${DOJO_ENGAGEMENT_ID}" \
-    -F "file=@${file_path};type=${mime}"
-}
-
-reimport_scan "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
-reimport_scan "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
-reimport_scan "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
-reimport_scan "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
-
-echo "All reimports completed successfully."
+echo "All scans processed successfully."
