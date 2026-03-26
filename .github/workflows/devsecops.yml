@@ -1,152 +1,62 @@
-name: DevSecOps - Security Scans (CI)
+get_or_create_engagement() {
+  local encoded_name
+  encoded_name=$(urlencode "$DOJO_ENGAGEMENT_NAME")
 
-on:
-  push:
-    branches: ["master"]
-  pull_request:
-  workflow_dispatch:
+  local existing
+  existing=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/engagements/?name=${encoded_name}&product=${DOJO_PRODUCT_ID}&limit=1") \
+    || { echo "ERROR: engagement lookup failed" >&2; exit 1; }
 
-jobs:
-  security-scans:
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 120
+  local engagement_id
+  engagement_id=$(echo "$existing" | extract_first_id)
 
-    env:
-      SCAN_BASE_DIR: "/tmp/devsecops-scans"
-      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
+  if [[ -n "$engagement_id" ]]; then
+    echo "$engagement_id"
+    return 0
+  fi
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  local encoded_lead
+  encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
 
-      # ── Prepare output directory ──
-      - name: Prepare scan output directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUN_OUTPUT_DIR"
-          rm -f "$RUN_OUTPUT_DIR"/* || true
-          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
+  local lead_payload
+  lead_payload=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1") \
+    || { echo "ERROR: user lookup failed" >&2; exit 1; }
 
-      # ── SAST: Semgrep (full scan) ──
-      - name: Semgrep full scan -> semgrep.json
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull returntocorp/semgrep:latest
-          docker run --rm \
-            -v "${{ github.workspace }}:/src:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            returntocorp/semgrep:latest \
-            semgrep scan \
-              --config=auto \
-              --config=p/ci \
-              --config=p/security-audit \
-              --json \
-              --output /out/semgrep.json \
-              /src
+  local lead_id
+  lead_id=$(echo "$lead_payload" | extract_first_id)
 
-          test -s "$RUN_OUTPUT_DIR/semgrep.json"
+  if [[ -z "$lead_id" ]]; then
+    echo "ERROR: Could not find DefectDojo user: ${DOJO_ENGAGEMENT_LEAD_USERNAME}" >&2
+    exit 1
+  fi
 
-      # ── SCA: Trivy (filesystem + image, full scan) ──
-      - name: Trivy full scan (filesystem) -> trivy_fs.json
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            fs \
-            --scanners vuln,misconfig,secret,license \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_fs.json \
-            /workspace
+  local target_start target_end
+  target_start=$(date -u +%Y-%m-%d)
+  target_end=$(date -u -d "+7 days" +%Y-%m-%d)
 
-          test -s "$RUN_OUTPUT_DIR/trivy_fs.json"
+  local payload
+  payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "name": os.environ["DOJO_ENGAGEMENT_NAME"],
+    "product": int(os.environ["DOJO_PRODUCT_ID"]),
+    "status": "In Progress",
+    "engagement_type": "CI/CD",
+    "target_start": os.environ["TARGET_START"],
+    "target_end": os.environ["TARGET_END"],
+    "lead": int(os.environ["LEAD_ID"]),
+}))
+PY
+)
 
-      - name: Trivy full scan (image) -> trivy_image.json
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull bkimminich/juice-shop
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
+  local created
+  created=$(curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/engagements/" \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$payload") || { echo "ERROR: engagement creation failed: $created" >&2; exit 1; }
 
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            image \
-            --scanners vuln,misconfig,secret \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_image.json \
-            bkimminich/juice-shop
-
-          test -s "$RUN_OUTPUT_DIR/trivy_image.json"
-
-      # ── DAST: ZAP ──
-      - name: Create docker network
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker network create zapnet || true
-
-      - name: Start Juice Shop (Docker)
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull bkimminich/juice-shop
-          docker rm -f juice-shop || true
-          docker run -d --name juice-shop --network zapnet -p 3000:3000 bkimminich/juice-shop
-
-          for i in {1..60}; do
-            if curl -sSf http://localhost:3000 >/dev/null; then
-              echo "Juice Shop ready"
-              break
-            fi
-            sleep 2
-          done
-
-      # NOTE: Base SCAN , Full scan has an issue
-      - name: ZAP baseline scan -> zap.xml
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUN_OUTPUT_DIR"
-          
-          docker pull ghcr.io/zaproxy/zaproxy:bare
-          docker run --rm --network zapnet -v ${{ github.workspace }}:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-            -t http://juice-shop:3000 \
-            -x zap.xml \
-            -r zap.html || true
-
-          test -s zap.xml
-          cp zap.xml "$RUN_OUTPUT_DIR/zap.xml"
-          test -s "$RUN_OUTPUT_DIR/zap.xml"
-
-      - name: Stop Juice Shop
-        if: always()
-        shell: bash
-        run: |
-          docker rm -f juice-shop || true
-
-      # ── Verify all results ──
-      - name: List scan results
-        if: always()
-        shell: bash
-        run: |
-          echo "=== Scan results in $RUN_OUTPUT_DIR ==="
-          ls -la "$RUN_OUTPUT_DIR" || true
-
-      # Optional: keep artifacts in GitHub
-      - name: Upload scan reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-scan-results-${{ github.run_id }}
-          path: |
-            /tmp/devsecops-scans/${{ github.run_id }}/*
+  echo "$created" | extract_id
+}
