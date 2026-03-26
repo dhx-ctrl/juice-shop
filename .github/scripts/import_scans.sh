@@ -6,6 +6,9 @@ set -euo pipefail
 # DOJO_ENGAGEMENT_NAME, DOJO_ENGAGEMENT_LEAD_USERNAME
 # SCAN_TYPE_TRIVY, SCAN_TYPE_ZAP, SCAN_TYPE_SEMGREP
 # RUN_OUTPUT_DIR
+#
+# Optional env vars:
+# DOJO_MINIMUM_SEVERITY (default: Info)
 
 required_vars=(
   DOJO_URL DOJO_TOKEN DOJO_PRODUCT_ID
@@ -20,6 +23,8 @@ for v in "${required_vars[@]}"; do
     exit 1
   fi
 done
+
+DOJO_MINIMUM_SEVERITY="${DOJO_MINIMUM_SEVERITY:-Info}"
 
 urlencode() {
   python3 - "$1" <<'PY'
@@ -59,11 +64,6 @@ get_or_create_engagement() {
   local engagement_id
   engagement_id=$(echo "$existing" | extract_first_id)
 
-  if [[ -n "$engagement_id" ]]; then
-    echo "$engagement_id"
-    return 0
-  fi
-
   local encoded_lead
   encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
   local lead_payload
@@ -82,6 +82,32 @@ get_or_create_engagement() {
   local target_end
   target_start=$(date -u +%Y-%m-%d)
   target_end=$(date -u -d "+7 days" +%Y-%m-%d)
+
+  if [[ -n "$engagement_id" ]]; then
+    local update_payload
+    update_payload=$(ENGAGEMENT_ID="$engagement_id" TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 - <<'PY'
+import json
+import os
+payload = {
+    "id": int(os.environ["ENGAGEMENT_ID"]),
+    "target_start": os.environ["TARGET_START"],
+    "target_end": os.environ["TARGET_END"],
+    "status": "In Progress",
+    "engagement_type": "CI/CD",
+    "lead": int(os.environ["LEAD_ID"]),
+}
+print(json.dumps(payload))
+PY
+)
+
+    curl --fail-with-body -sS -X PATCH "${DOJO_URL}/api/v2/engagements/${engagement_id}/" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$update_payload" >/dev/null
+
+    echo "$engagement_id"
+    return 0
+  fi
 
   local payload
   payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 - <<'PY'
@@ -137,26 +163,27 @@ done
 import_scan () {
   local scan_type="$1"
   local file_path="$2"
-  local min_sev="$3"
+  local test_title="$3"
   local mime="$4"
 
-  echo "Importing: ${scan_type} -> ${file_path}"
+  echo "Importing: ${scan_type} -> ${file_path} (test: ${test_title})"
   curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
     -F "reimport=true" \
     -F "scan_type=${scan_type}" \
-    -F "minimum_severity=${min_sev}" \
+    -F "minimum_severity=${DOJO_MINIMUM_SEVERITY}" \
+    -F "test_title=${test_title}" \
     -F "product=${DOJO_PRODUCT_ID}" \
     -F "engagement=${DOJO_ENGAGEMENT_ID}" \
     -F "file=@${file_path};type=${mime}"
 }
 
 # Imports
-import_scan "${SCAN_TYPE_SEMGREP}" "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
-import_scan "${SCAN_TYPE_ZAP}"     "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
+import_scan "${SCAN_TYPE_SEMGREP}" "${RUN_OUTPUT_DIR}/semgrep.json"     "Semgrep SAST"      "application/json"
+import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Trivy Filesystem"  "application/json"
+import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_image.json" "Trivy Container"   "application/json"
+import_scan "${SCAN_TYPE_ZAP}"     "${RUN_OUTPUT_DIR}/zap.xml"          "ZAP Baseline DAST" "text/xml"
 
 echo "All imports completed successfully."
