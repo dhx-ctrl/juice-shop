@@ -197,7 +197,7 @@ import_scan() {
   local mime="$4"
 
   echo "Importing: ${scan_type} -> ${file_path}"
-  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/reimport-scan/" \
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
