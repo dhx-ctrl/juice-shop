@@ -93,8 +93,12 @@ get_or_create_engagement() {
     "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1") \
     || { echo "ERROR: user lookup failed" >&2; exit 1; }
 
+  echo "DEBUG lead_payload: $lead_payload" >&2
+
   local lead_id
   lead_id=$(echo "$lead_payload" | extract_first_id)
+
+  echo "DEBUG lead_id: $lead_id" >&2
 
   if [[ -z "$lead_id" ]]; then
     echo "ERROR: Could not find DefectDojo user: ${DOJO_ENGAGEMENT_LEAD_USERNAME}" >&2
