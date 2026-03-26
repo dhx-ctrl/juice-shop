@@ -31,9 +31,15 @@ PY
 
 extract_first_id() {
   python3 - <<'PY'
-import json
-import sys
-payload = json.load(sys.stdin)
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(0)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError as e:
+    print(f"ERROR: invalid JSON from API: {e}\nRaw response: {raw[:300]}", file=sys.stderr)
+    sys.exit(1)
 results = payload.get("results") or []
 print(results[0].get("id", "") if results else "")
 PY
@@ -41,20 +47,43 @@ PY
 
 extract_id() {
   python3 - <<'PY'
-import json
-import sys
-payload = json.load(sys.stdin)
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(0)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError as e:
+    print(f"ERROR: invalid JSON from API: {e}\nRaw response: {raw[:300]}", file=sys.stderr)
+    sys.exit(1)
 print(payload.get("id", ""))
 PY
 }
 
+# ── Connectivity check ──────────────────────────────────────────
+echo "Checking DefectDojo connectivity..."
+http_code=$(curl -o /tmp/dojo_check.txt -sS -w "%{http_code}" \
+  -H "Authorization: Token ${DOJO_TOKEN}" \
+  "${DOJO_URL}/api/v2/users/?limit=1")
+
+if [[ "$http_code" != "200" ]]; then
+  echo "ERROR: DefectDojo returned HTTP $http_code — check DOJO_URL and DOJO_TOKEN"
+  echo "Response body:"
+  cat /tmp/dojo_check.txt
+  exit 1
+fi
+echo "DefectDojo reachable (HTTP $http_code)"
+
+# ── Engagement ──────────────────────────────────────────────────
 get_or_create_engagement() {
   local encoded_name
   encoded_name=$(urlencode "$DOJO_ENGAGEMENT_NAME")
 
   local existing
-  existing=$(curl -sS -H "Authorization: Token ${DOJO_TOKEN}" \
-    "${DOJO_URL}/api/v2/engagements/?name=${encoded_name}&product=${DOJO_PRODUCT_ID}&limit=1")
+  existing=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/engagements/?name=${encoded_name}&product=${DOJO_PRODUCT_ID}&limit=1") \
+    || { echo "ERROR: engagement lookup failed: $existing"; exit 1; }
 
   local engagement_id
   engagement_id=$(echo "$existing" | extract_first_id)
@@ -66,9 +95,12 @@ get_or_create_engagement() {
 
   local encoded_lead
   encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
+
   local lead_payload
-  lead_payload=$(curl -sS -H "Authorization: Token ${DOJO_TOKEN}" \
-    "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1")
+  lead_payload=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/users/?username=${encoded_lead}&limit=1") \
+    || { echo "ERROR: user lookup failed: $lead_payload"; exit 1; }
 
   local lead_id
   lead_id=$(echo "$lead_payload" | extract_first_id)
@@ -78,16 +110,14 @@ get_or_create_engagement() {
     exit 1
   fi
 
-  local target_start
-  local target_end
+  local target_start target_end
   target_start=$(date -u +%Y-%m-%d)
   target_end=$(date -u -d "+7 days" +%Y-%m-%d)
 
   local payload
   payload=$(TARGET_START="$target_start" TARGET_END="$target_end" LEAD_ID="$lead_id" python3 - <<'PY'
-import json
-import os
-payload = {
+import json, os
+print(json.dumps({
     "name": os.environ["DOJO_ENGAGEMENT_NAME"],
     "product": int(os.environ["DOJO_PRODUCT_ID"]),
     "status": "In Progress",
@@ -95,8 +125,7 @@ payload = {
     "target_start": os.environ["TARGET_START"],
     "target_end": os.environ["TARGET_END"],
     "lead": int(os.environ["LEAD_ID"]),
-}
-print(json.dumps(payload))
+}))
 PY
 )
 
@@ -109,6 +138,7 @@ PY
   echo "$created" | extract_id
 }
 
+# ── Validate output dir ─────────────────────────────────────────
 echo "RUN_OUTPUT_DIR=${RUN_OUTPUT_DIR}"
 if [[ ! -d "${RUN_OUTPUT_DIR}" ]]; then
   echo "ERROR: RUN_OUTPUT_DIR does not exist: ${RUN_OUTPUT_DIR}"
@@ -120,12 +150,10 @@ if [[ -z "$DOJO_ENGAGEMENT_ID" ]]; then
   echo "ERROR: Failed to resolve engagement ID"
   exit 1
 fi
-
 export DOJO_ENGAGEMENT_ID
 
 ls -la "${RUN_OUTPUT_DIR}"
 
-# Verify files exist and are not empty
 for f in semgrep.json trivy_fs.json trivy_image.json zap.xml; do
   if [[ ! -s "${RUN_OUTPUT_DIR}/${f}" ]]; then
     echo "ERROR: missing/empty file: ${RUN_OUTPUT_DIR}/${f}"
@@ -134,7 +162,8 @@ for f in semgrep.json trivy_fs.json trivy_image.json zap.xml; do
   echo "OK: ${f} ($(wc -c < "${RUN_OUTPUT_DIR}/${f}") bytes)"
 done
 
-import_scan () {
+# ── Import ──────────────────────────────────────────────────────
+import_scan() {
   local scan_type="$1"
   local file_path="$2"
   local min_sev="$3"
@@ -153,7 +182,6 @@ import_scan () {
     -F "file=@${file_path};type=${mime}"
 }
 
-# Imports
 import_scan "${SCAN_TYPE_SEMGREP}" "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
 import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
 import_scan "${SCAN_TYPE_TRIVY}"   "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
