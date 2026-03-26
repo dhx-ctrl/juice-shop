@@ -55,9 +55,6 @@ print(payload.get('id', ''))
 "
 }
 
-# Build the metadata JSON object (fields that accept plain strings/URLs only).
-# build_server, orchestration_engine, source_code_management_server are FK
-# integer IDs in DefectDojo and must be set via the UI — excluded here.
 metadata_json() {
   BUILD_ID="$BUILD_ID" COMMIT_HASH="$COMMIT_HASH" BRANCH_TAG="$BRANCH_TAG" \
   REPO_URI="$REPO_URI" TEST_STRATEGY="$TEST_STRATEGY" \
@@ -112,7 +109,6 @@ get_or_create_engagement() {
     return 0
   fi
 
-  # Resolve lead user ID
   local encoded_lead
   encoded_lead=$(urlencode "$DOJO_ENGAGEMENT_LEAD_USERNAME")
 
@@ -190,18 +186,21 @@ for f in semgrep.json trivy_fs.json trivy_image.json zap.xml; do
   echo "OK: ${f} ($(wc -c < "${RUN_OUTPUT_DIR}/${f}") bytes)"
 done
 
-import_scan() {
+# Uses /reimport-scan/ so DefectDojo matches the existing test by scan_type +
+# engagement and updates findings in place rather than creating duplicates.
+# Findings no longer present in the latest scan are auto-mitigated.
+reimport_scan() {
   local scan_type="$1"
   local file_path="$2"
   local min_sev="$3"
   local mime="$4"
 
-  echo "Importing: ${scan_type} -> ${file_path}"
-  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
+  echo "Reimporting: ${scan_type} -> ${file_path}"
+  curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/reimport-scan/" \
     -H "Authorization: Token ${DOJO_TOKEN}" \
     -F "active=true" \
     -F "verified=false" \
-    -F "close_old_findings=false" \
+    -F "close_old_findings=true" \
     -F "scan_type=${scan_type}" \
     -F "minimum_severity=${min_sev}" \
     -F "product=${DOJO_PRODUCT_ID}" \
@@ -209,9 +208,9 @@ import_scan() {
     -F "file=@${file_path};type=${mime}"
 }
 
-import_scan "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
-import_scan "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
-import_scan "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
+reimport_scan "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
+reimport_scan "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
+reimport_scan "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
+reimport_scan "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
 
-echo "All imports completed successfully."
+echo "All reimports completed successfully."
