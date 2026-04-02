@@ -45,26 +45,29 @@ if errors:
 test_val = d.get("test")
 tid = test_val.get("id") if isinstance(test_val, dict) else test_val
 
-# ── Findings counts — field names vary by DD version ──────────────────────
-# v2.x:  d["statistics"]["after"]["findings"]["total"] / ["opened"]
-# older: d["total_imported_findings"], d["findings_count"]
-stats      = d.get("statistics") or {}
-after      = stats.get("after") or {}
-findings_s = after.get("findings") or {}
+# ── Findings counts ───────────────────────────────────────────────────────
+# This DD version: d["statistics"] is a flat dict with keys:
+#   active, verified, duplicate, false_p, out_of_scope, is_mitigated,
+#   risk_accepted, total
+# Older nested form: d["statistics"]["after"]["findings"]["total"]
+# Even older: d["total_imported_findings"]
+stats = d.get("statistics") or {}
 
-total_f = (
-    d.get("total_imported_findings")
-    or d.get("findings_count")
-    or findings_s.get("total")
-    or after.get("total")
-    or stats.get("total")
-    or "?"
-)
-new_f = (
-    findings_s.get("opened")
-    or after.get("opened")
-    or d.get("new_findings")
-    or "?"
-)
+if isinstance(stats, dict) and "total" in stats:
+    # Flat (current DD version)
+    total_f = stats.get("total", "?")
+    active_f = stats.get("active", "?")
+    dupe_f = stats.get("duplicate", "?")
+elif isinstance(stats, dict) and "after" in stats:
+    # Nested legacy form
+    after = stats.get("after") or {}
+    findings_s = after.get("findings") or {}
+    total_f = findings_s.get("total") or after.get("total") or "?"
+    active_f = findings_s.get("opened") or after.get("opened") or "?"
+    dupe_f = "?"
+else:
+    total_f = d.get("total_imported_findings") or d.get("findings_count") or "?"
+    active_f = d.get("new_findings") or "?"
+    dupe_f = "?"
 
-print(f"[{label}] OK  test_id={tid} | total_imported={total_f} | new={new_f}")
+print(f"[{label}] OK  test_id={tid} | total={total_f} | active={active_f} | dupes={dupe_f}")
