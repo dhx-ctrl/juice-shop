@@ -142,6 +142,106 @@ jobs:
           echo "=== Scan results in $RUN_OUTPUT_DIR ==="
           ls -la "$RUN_OUTPUT_DIR" || true
 
+      # ── DEBUG: Inspect raw scan outputs ──
+      # This step counts findings in each file and prints a preview.
+      # Remove once findings counts in DefectDojo are confirmed correct.
+      - name: "[DEBUG] Inspect scan outputs"
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================================"
+          echo "DEBUG: semgrep.json"
+          echo "======================================================"
+          SEMGREP_RESULTS=$(python3 -c "
+          import json, sys
+          with open('$RUN_OUTPUT_DIR/semgrep.json') as f:
+              d = json.load(f)
+          results = d.get('results', [])
+          errors  = d.get('errors', [])
+          print(f'  findings : {len(results)}')
+          print(f'  errors   : {len(errors)}')
+          for i, r in enumerate(results[:5]):
+              print(f'  [{i+1}] {r.get(\"check_id\",\"?\")} | {r.get(\"path\",\"?\")}:{r.get(\"start\",{}).get(\"line\",\"?\")} | severity={r.get(\"extra\",{}).get(\"severity\",\"?\")}')
+          if len(results) > 5:
+              print(f'  ... and {len(results)-5} more')
+          " 2>&1) || SEMGREP_RESULTS="ERROR reading semgrep.json"
+          echo "$SEMGREP_RESULTS"
+
+          echo "======================================================"
+          echo "DEBUG: trivy_fs.json"
+          echo "======================================================"
+          TRIVY_FS_RESULTS=$(python3 -c "
+          import json, sys
+          with open('$RUN_OUTPUT_DIR/trivy_fs.json') as f:
+              d = json.load(f)
+          results = d.get('Results', [])
+          total = sum(len(r.get('Vulnerabilities') or []) + len(r.get('Misconfigurations') or []) + len(r.get('Secrets') or []) for r in results)
+          print(f'  Result blocks : {len(results)}')
+          print(f'  Total vulns/misconfigs/secrets: {total}')
+          count = 0
+          for r in results:
+              for v in (r.get('Vulnerabilities') or [])[:3]:
+                  print(f'  [vuln] {v.get(\"VulnerabilityID\",\"?\")} | {v.get(\"PkgName\",\"?\")} | {v.get(\"Severity\",\"?\")}')
+                  count += 1
+                  if count >= 5: break
+              if count >= 5: break
+          " 2>&1) || TRIVY_FS_RESULTS="ERROR reading trivy_fs.json"
+          echo "$TRIVY_FS_RESULTS"
+
+          echo "======================================================"
+          echo "DEBUG: trivy_image.json"
+          echo "======================================================"
+          TRIVY_IMG_RESULTS=$(python3 -c "
+          import json, sys
+          with open('$RUN_OUTPUT_DIR/trivy_image.json') as f:
+              d = json.load(f)
+          results = d.get('Results', [])
+          total = sum(len(r.get('Vulnerabilities') or []) + len(r.get('Misconfigurations') or []) for r in results)
+          print(f'  Result blocks : {len(results)}')
+          print(f'  Total vulns/misconfigs: {total}')
+          count = 0
+          for r in results:
+              for v in (r.get('Vulnerabilities') or [])[:3]:
+                  print(f'  [vuln] {v.get(\"VulnerabilityID\",\"?\")} | {v.get(\"PkgName\",\"?\")} | {v.get(\"Severity\",\"?\")}')
+                  count += 1
+                  if count >= 5: break
+              if count >= 5: break
+          " 2>&1) || TRIVY_IMG_RESULTS="ERROR reading trivy_image.json"
+          echo "$TRIVY_IMG_RESULTS"
+
+          echo "======================================================"
+          echo "DEBUG: zap.xml"
+          echo "======================================================"
+          ZAP_RESULTS=$(python3 -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('$RUN_OUTPUT_DIR/zap.xml')
+          root = tree.getroot()
+          alerts = root.findall('.//alertitem')
+          instances = root.findall('.//instance')
+          print(f'  alert types  : {len(alerts)}')
+          print(f'  instances    : {len(instances)}')
+          for a in alerts[:5]:
+              name     = a.findtext('alert', '?')
+              risk     = a.findtext('riskdesc', '?')
+              count_el = a.findtext('count', '?')
+              print(f'  [{name}] risk={risk} count={count_el}')
+          " 2>&1) || ZAP_RESULTS="ERROR reading zap.xml"
+          echo "$ZAP_RESULTS"
+
+          echo "======================================================"
+          echo "DEBUG: DefectDojo version"
+          echo "======================================================"
+          curl -sS "${DOJO_URL:-http://localhost:8080}/api/v2/system_settings/" \
+            -H "Authorization: Token ${DOJO_TOKEN:-}" \
+            | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          r=d.get('results',[{}])
+          print('  DD version info (system_settings):', json.dumps(r[0] if r else {}, indent=2)[:400])
+          " 2>/dev/null || echo "  (could not reach DefectDojo or token not set in this step)"
+
       # Optional: keep artifacts in GitHub
       - name: Upload scan reports
         if: always()
