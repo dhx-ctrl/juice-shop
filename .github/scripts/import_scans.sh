@@ -162,18 +162,21 @@ print(json.dumps({
   echo "$created" | extract_id
 }
 
-# Returns the test ID if a test already exists for this scan_type + engagement,
-# empty string otherwise.
+# Returns the test ID if a test already exists for this scan_type + title + engagement.
+# Using test_title in addition to scan_type prevents collision when two scans
+# share the same DefectDojo type (e.g. Trivy FS and Trivy Image both → "Trivy Scan").
 find_existing_test() {
   local scan_type="$1"
-  local encoded_type
+  local test_title="$2"
+  local encoded_type encoded_title
   encoded_type=$(urlencode "$scan_type")
+  encoded_title=$(urlencode "$test_title")
 
   local result
   result=$(curl --fail-with-body -sS \
     -H "Authorization: Token ${DOJO_TOKEN}" \
-    "${DOJO_URL}/api/v2/tests/?engagement=${DOJO_ENGAGEMENT_ID}&test_type_name=${encoded_type}&limit=1") \
-    || { echo "ERROR: test lookup failed for ${scan_type}" >&2; exit 1; }
+    "${DOJO_URL}/api/v2/tests/?engagement=${DOJO_ENGAGEMENT_ID}&test_type_name=${encoded_type}&title=${encoded_title}&limit=1") \
+    || { echo "ERROR: test lookup failed for ${scan_type} / ${test_title}" >&2; exit 1; }
 
   echo "$result" | extract_first_id
 }
@@ -181,17 +184,20 @@ find_existing_test() {
 # First run for a scan type  → import-scan   (creates the test)
 # Subsequent runs            → reimport-scan  (updates findings in place,
 #                                              auto-mitigates fixed vulns)
+# $5 test_title: mandatory — used to uniquely identify the test and avoid
+#                collisions between scans that share the same DefectDojo type.
 import_or_reimport() {
   local scan_type="$1"
   local file_path="$2"
   local min_sev="$3"
   local mime="$4"
+  local test_title="$5"
 
   local test_id
-  test_id=$(find_existing_test "$scan_type")
+  test_id=$(find_existing_test "$scan_type" "$test_title")
 
   if [[ -n "$test_id" ]]; then
-    echo "Reimporting (test ${test_id}): ${scan_type} -> ${file_path}"
+    echo "Reimporting (test ${test_id}) [${test_title}]: ${scan_type} -> ${file_path}"
     curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/reimport-scan/" \
       -H "Authorization: Token ${DOJO_TOKEN}" \
       -F "active=true" \
@@ -199,18 +205,20 @@ import_or_reimport() {
       -F "close_old_findings=true" \
       -F "test=${test_id}" \
       -F "scan_type=${scan_type}" \
+      -F "test_title=${test_title}" \
       -F "minimum_severity=${min_sev}" \
       -F "product=${DOJO_PRODUCT_ID}" \
       -F "engagement=${DOJO_ENGAGEMENT_ID}" \
       -F "file=@${file_path};type=${mime}"
   else
-    echo "Importing (first run): ${scan_type} -> ${file_path}"
+    echo "Importing (first run) [${test_title}]: ${scan_type} -> ${file_path}"
     curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/import-scan/" \
       -H "Authorization: Token ${DOJO_TOKEN}" \
       -F "active=true" \
       -F "verified=false" \
       -F "close_old_findings=false" \
       -F "scan_type=${scan_type}" \
+      -F "test_title=${test_title}" \
       -F "minimum_severity=${min_sev}" \
       -F "product=${DOJO_PRODUCT_ID}" \
       -F "engagement=${DOJO_ENGAGEMENT_ID}" \
@@ -242,9 +250,9 @@ for f in semgrep.json trivy_fs.json trivy_image.json zap.xml; do
   echo "OK: ${f} ($(wc -c < "${RUN_OUTPUT_DIR}/${f}") bytes)"
 done
 
-import_or_reimport "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json"
-import_or_reimport "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json"
-import_or_reimport "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json"
-import_or_reimport "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"
+import_or_reimport "${SCAN_TYPE_SEMGREP}"     "${RUN_OUTPUT_DIR}/semgrep.json"     "Low" "application/json" "Semgrep SAST"
+import_or_reimport "${SCAN_TYPE_TRIVY_FS}"    "${RUN_OUTPUT_DIR}/trivy_fs.json"    "Low" "application/json" "Trivy Filesystem"
+import_or_reimport "${SCAN_TYPE_TRIVY_IMAGE}" "${RUN_OUTPUT_DIR}/trivy_image.json" "Low" "application/json" "Trivy Image"
+import_or_reimport "${SCAN_TYPE_ZAP}"         "${RUN_OUTPUT_DIR}/zap.xml"          "Low" "text/xml"         "ZAP Baseline"
 
 echo "All scans processed successfully."
