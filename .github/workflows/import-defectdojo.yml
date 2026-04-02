@@ -17,7 +17,7 @@ jobs:
       DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
       DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
       SCAN_TYPE_TRIVY_FS: "Trivy Scan"
-      SCAN_TYPE_TRIVY_IMAGE: "Trivy Operator Scan"
+      SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
       SCAN_TYPE_ZAP: "ZAP Scan"
       SCAN_TYPE_SEMGREP: "Semgrep JSON Report"
 
