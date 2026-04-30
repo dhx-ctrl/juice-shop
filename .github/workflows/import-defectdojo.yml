@@ -1,5 +1,12 @@
 name: Import Scans -> DefectDojo (CD)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers automatically after the CI workflow completes successfully.
+# All target-specific variables (APP_NAME, DOJO_PRODUCT_ID, enable-flags, …)
+# are read from the scan_meta.env file that the CI step wrote into RUN_OUTPUT_DIR.
+# You never need to duplicate those values here.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   workflow_run:
     workflows: ["DevSecOps - Security Scans (CI)"]
@@ -13,30 +20,48 @@ jobs:
 
     env:
       DOJO_URL: "http://localhost:8080"
-      DOJO_PRODUCT_ID: "1"
       DOJO_ENGAGEMENT_NAME: "DevSecOps CI/CD"
       DOJO_ENGAGEMENT_LEAD_USERNAME: "admin"
-      SCAN_TYPE_TRIVY_FS: "Trivy Scan"
-      SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
-      SCAN_TYPE_ZAP: "ZAP Scan"
-      SCAN_TYPE_SEMGREP: "Semgrep JSON Report"
 
-      # CI/CD metadata for DefectDojo engagement (plain string/URL fields only)
-      # build_server, orchestration_engine, source_code_management_server
-      # are FK integer IDs in DefectDojo and must be configured via the UI.
-      BUILD_ID: ${{ github.event.workflow_run.id }}
+      # DefectDojo scan-type names (these are DefectDojo's own parser identifiers
+      # and must not be changed unless you change the DD parser configuration).
+      SCAN_TYPE_TRIVY_FS:    "Trivy Scan"
+      SCAN_TYPE_TRIVY_IMAGE: "Trivy Scan"
+      SCAN_TYPE_ZAP:         "ZAP Scan"
+      SCAN_TYPE_SEMGREP:     "Semgrep JSON Report"
+
+      # CI/CD metadata forwarded to DefectDojo engagement fields.
+      BUILD_ID:    ${{ github.event.workflow_run.id }}
       COMMIT_HASH: ${{ github.event.workflow_run.head_sha }}
-      BRANCH_TAG: ${{ github.event.workflow_run.head_branch }}
-      REPO_URI: "${{ github.server_url }}/${{ github.repository }}"
+      BRANCH_TAG:  ${{ github.event.workflow_run.head_branch }}
+      REPO_URI:    "${{ github.server_url }}/${{ github.repository }}"
       TEST_STRATEGY: "https://github.com/${{ github.repository }}/actions"
 
-      # Folder created by CI (per-run)
+      # Folder created by the CI run (keyed on the triggering run's ID).
       RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.event.workflow_run.id }}"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── Verify the metadata file exists ───────────────────────────────────
+      # This file is written by CI and contains all target-specific variables.
+      # If it is missing, the CI run either failed before writing it or the
+      # RUN_OUTPUT_DIR has already been cleaned up — abort early with a clear
+      # message rather than running with wrong/missing configuration.
+      - name: Verify scan_meta.env exists
+        shell: bash
+        run: |
+          if [[ ! -f "$RUN_OUTPUT_DIR/scan_meta.env" ]]; then
+            echo "ERROR: $RUN_OUTPUT_DIR/scan_meta.env not found."
+            echo "       Either the CI run did not complete its setup step,"
+            echo "       or the output directory has been cleaned prematurely."
+            exit 1
+          fi
+          echo "scan_meta.env found:"
+          cat "$RUN_OUTPUT_DIR/scan_meta.env"
+
+      # ── Import scans ───────────────────────────────────────────────────────
       - name: Import scans via script
         shell: bash
         env:
@@ -45,8 +70,8 @@ jobs:
           set -euo pipefail
           bash .github/scripts/import_scans.sh
 
+      # ── Cleanup ───────────────────────────────────────────────────────────
       - name: Cleanup run folder
         if: always()
         shell: bash
-        run: |
-          rm -rf "$RUN_OUTPUT_DIR" || true
+        run: rm -rf "$RUN_OUTPUT_DIR" || true
