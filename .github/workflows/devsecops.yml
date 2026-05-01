@@ -1,24 +1,5 @@
 name: DevSecOps - Security Scans (CI)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MULTI-TARGET USAGE
-#
-#   push / pull_request   → scans the default target (see `env` block below).
-#
-#   workflow_dispatch     → fill in the inputs to scan any local Node.js app.
-#                           Example targets:
-#                             Juice Shop : APP_NAME=juice-shop
-#                                          APP_URL=http://juice-shop:3000
-#                                          DOCKER_IMAGE_NAME=bkimminich/juice-shop
-#                             DVNA       : APP_NAME=dvna
-#                                          APP_URL=http://dvna:9090
-#                                          DOCKER_IMAGE_NAME=appsecco/dvna:sqlite
-#
-# Scanner enable-flags default to true.  Set any to false to skip that scanner
-# for a particular target (e.g. disable ENABLE_TRIVY_IMAGE when you don't have
-# a pre-built Docker image for the target).
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   push:
     branches: ["master"]
@@ -30,13 +11,21 @@ on:
         required: false
         default: "juice-shop"
       APP_URL:
-        description: "URL ZAP will scan (must be reachable from the runner)"
+        description: "URL ZAP will scan from inside the zapnet Docker network"
         required: false
         default: "http://juice-shop:3000"
       DOCKER_IMAGE_NAME:
-        description: "Docker image for Trivy image scan and ZAP target (leave blank to skip image scan)"
+        description: "Docker image for Trivy image scan and ZAP target"
         required: false
         default: "bkimminich/juice-shop"
+      APP_PORT:
+        description: "Host-side port exposed on the runner machine"
+        required: false
+        default: "3000"
+      CONTAINER_PORT:
+        description: "Port the target app listens on inside the Docker container"
+        required: false
+        default: "3000"
       DOJO_PRODUCT_ID:
         description: "DefectDojo product ID for this app"
         required: false
@@ -71,6 +60,8 @@ jobs:
       APP_NAME:          ${{ github.event.inputs.APP_NAME          || 'juice-shop' }}
       APP_URL:           ${{ github.event.inputs.APP_URL           || 'http://juice-shop:3000' }}
       DOCKER_IMAGE_NAME: ${{ github.event.inputs.DOCKER_IMAGE_NAME || 'bkimminich/juice-shop' }}
+      APP_PORT:          ${{ github.event.inputs.APP_PORT          || '3000' }}
+      CONTAINER_PORT:    ${{ github.event.inputs.CONTAINER_PORT    || '3000' }}
       DOJO_PRODUCT_ID:   ${{ github.event.inputs.DOJO_PRODUCT_ID   || '1' }}
 
       # ── Scanner enable/disable flags ────────────────────────────────────────
@@ -215,15 +206,9 @@ jobs:
           docker pull "$DOCKER_IMAGE_NAME"
           docker rm -f "target-${APP_NAME}" 2>/dev/null || true
 
-          # Derive hostname from APP_URL; ports come from env vars.
+          # Derive hostname from APP_URL.
+          # APP_PORT and CONTAINER_PORT are set in the job env block.
           CONTAINER_HOST=$(python3 -c "from urllib.parse import urlparse; u=urlparse('$APP_URL'); print(u.hostname)")
-
-          # APP_PORT  = host-side port (for local access / debugging)
-          # CONTAINER_PORT = port the app listens on inside the container
-          # Default both from APP_URL if not explicitly set.
-          URL_PORT=$(python3 -c "from urllib.parse import urlparse; u=urlparse('$APP_URL'); print(u.port or 80)")
-          APP_PORT="${APP_PORT:-$URL_PORT}"
-          CONTAINER_PORT="${CONTAINER_PORT:-$URL_PORT}"
 
           # Use the hostname from APP_URL as a network alias so ZAP can
           # reach the container at the exact URL specified in APP_URL.
@@ -238,14 +223,16 @@ jobs:
           # inside the zapnet network (via curlimages/curl) because the
           # host cannot resolve Docker network aliases like "juice-shop".
           echo "Waiting for $APP_URL to become ready (checking from inside zapnet)..."
-          for i in {1..60}; do
-            if docker run --rm --network zapnet curlimages/curl \
-                 -sSf "$APP_URL" >/dev/null 2>&1; then
-              echo "$APP_NAME ready after ${i}×2s"
+          for i in {1..90}; do
+            HTTP_CODE=$(docker run --rm --network zapnet curlimages/curl \
+                 -sS -o /dev/null -w "%{http_code}" --max-time 5 "$APP_URL" 2>/dev/null) || HTTP_CODE="000"
+            if [[ "$HTTP_CODE" =~ ^(200|301|302)$ ]]; then
+              echo "$APP_NAME responded HTTP $HTTP_CODE after ${i}×2s"
               break
             fi
-            if [[ $i -eq 60 ]]; then
-              echo "ERROR: $APP_URL did not become ready within 120s"
+            if [[ $i -eq 90 ]]; then
+              echo "ERROR: $APP_URL did not become ready within 180s (last HTTP: $HTTP_CODE)"
+              docker logs "target-${APP_NAME}" 2>&1 | tail -30 || true
               exit 1
             fi
             sleep 2
@@ -256,20 +243,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Remove stale output so a failed ZAP run does not leave old files
-          # that would be mistakenly imported into DefectDojo.
-          rm -f "${{ github.workspace }}/zap.xml" "${{ github.workspace }}/zap.html"
+          # ZAP runs as uid 1000 (zap) inside the container.  The host
+          # workspace is typically owned by root or the runner user, so
+          # mounting it directly at /zap/wrk causes:
+          #   PermissionError: [Errno 13] Permission denied: '/zap/wrk/zap.yaml'
+          # Fix: create a dedicated directory with open permissions.
+          ZAP_WORK_DIR="${RUN_OUTPUT_DIR}/zap_wrk"
+          rm -rf "$ZAP_WORK_DIR"
+          mkdir -p "$ZAP_WORK_DIR"
+          chmod 777 "$ZAP_WORK_DIR"
 
           docker pull ghcr.io/zaproxy/zaproxy:stable
+
+          # Pre-flight: confirm the target is still reachable from zapnet.
+          # The image pull above can take minutes; the target may have crashed
+          # in the meantime.  ZAP gives an unhelpful "msg is null" error when
+          # the target is unreachable, so we catch it early with a clear message.
+          echo "Pre-flight: verifying $APP_URL is reachable from zapnet..."
+          PF_CODE=$(docker run --rm --network zapnet curlimages/curl \
+            -sS -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$APP_URL" 2>/dev/null) || PF_CODE="000"
+          if [[ "$PF_CODE" == "000" ]]; then
+            echo "ERROR: $APP_URL is unreachable from zapnet (HTTP $PF_CODE)"
+            echo "Target container status:"
+            docker ps -a --filter "name=target-${APP_NAME}" --format "{{.Status}}" || true
+            docker logs "target-${APP_NAME}" 2>&1 | tail -30 || true
+            exit 1
+          fi
+          echo "Pre-flight OK — $APP_URL returned HTTP $PF_CODE"
+
           docker run --rm --network zapnet \
-            -v "${{ github.workspace }}:/zap/wrk:rw" \
+            -v "${ZAP_WORK_DIR}:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t "$APP_URL" \
             -x zap.xml \
             -r zap.html || true   # ZAP exits non-zero when findings exist; that's expected
 
-          test -s zap.xml
-          cp zap.xml "$RUN_OUTPUT_DIR/zap.xml"
+          if [[ ! -s "${ZAP_WORK_DIR}/zap.xml" ]]; then
+            echo "ERROR: ZAP did not produce zap.xml — check ZAP logs above"
+            ls -la "$ZAP_WORK_DIR"
+            exit 1
+          fi
+          cp "${ZAP_WORK_DIR}/zap.xml" "$RUN_OUTPUT_DIR/zap.xml"
           echo "zap.xml written ($(wc -c < "$RUN_OUTPUT_DIR/zap.xml") bytes)"
 
       - name: "Stop target app: ${{ env.APP_NAME }}"
