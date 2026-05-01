@@ -41,7 +41,7 @@ rm -f /tmp/_scan_meta_clean.env
 
 # ── 2. Validate required env vars (always needed) ──────────────────────────
 required_always=(
-  DOJO_URL DOJO_TOKEN DOJO_PRODUCT_ID
+  DOJO_URL DOJO_TOKEN
   DOJO_ENGAGEMENT_NAME DOJO_ENGAGEMENT_LEAD_USERNAME
   SCAN_TYPE_TRIVY_FS SCAN_TYPE_TRIVY_IMAGE SCAN_TYPE_ZAP SCAN_TYPE_SEMGREP
   BUILD_ID COMMIT_HASH BRANCH_TAG REPO_URI TEST_STRATEGY
@@ -67,7 +67,7 @@ REQUIRE_TRIVY_IMAGE="${REQUIRE_TRIVY_IMAGE:-false}"
 REQUIRE_ZAP="${REQUIRE_ZAP:-false}"
 
 echo "════════════════════════════════════════════════════════════════"
-echo " DefectDojo import — target: ${APP_NAME}  product: ${DOJO_PRODUCT_ID}"
+echo " DefectDojo import — target: ${APP_NAME}  product: ${DOJO_PRODUCT_ID:-(auto)}"
 echo " Scanners → semgrep=${ENABLE_SEMGREP}  trivy_fs=${ENABLE_TRIVY_FS}  trivy_image=${ENABLE_TRIVY_IMAGE}  zap=${ENABLE_ZAP}"
 echo "════════════════════════════════════════════════════════════════"
 
@@ -147,6 +147,88 @@ if [[ "$http_code" != "200" ]]; then
   exit 1
 fi
 echo "DefectDojo reachable (HTTP $http_code)"
+
+# ── Product: get or create ────────────────────────────────────────────────
+# Resolves DOJO_PRODUCT_ID automatically so you never need to pre-create
+# products in DefectDojo manually.
+#
+# Priority:
+#   1. If DOJO_PRODUCT_ID is set and that product exists → use it.
+#   2. Search for a product named APP_NAME → use it if found.
+#   3. Create a new product named APP_NAME → use the new ID.
+
+get_or_create_product() {
+  # ── Try by explicit ID first (if supplied) ──────────────────────────────
+  if [[ -n "${DOJO_PRODUCT_ID:-}" ]]; then
+    local id_check
+    id_check=$(curl -sS -o /dev/null -w "%{http_code}" \
+      -H "Authorization: Token ${DOJO_TOKEN}" \
+      "${DOJO_URL}/api/v2/products/${DOJO_PRODUCT_ID}/") || true
+    if [[ "$id_check" == "200" ]]; then
+      echo "Product ID ${DOJO_PRODUCT_ID} exists" >&2
+      echo "$DOJO_PRODUCT_ID"
+      return 0
+    fi
+    echo "Product ID ${DOJO_PRODUCT_ID} not found (HTTP ${id_check}) — searching by name '${APP_NAME}'..." >&2
+  fi
+
+  # ── Search by APP_NAME ──────────────────────────────────────────────────
+  local encoded_name
+  encoded_name=$(urlencode "$APP_NAME")
+  local by_name
+  by_name=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/products/?name=${encoded_name}&limit=1") \
+    || { echo "ERROR: product lookup by name failed" >&2; exit 1; }
+
+  local product_id
+  product_id=$(echo "$by_name" | extract_first_id)
+
+  if [[ -n "$product_id" ]]; then
+    echo "Found existing product '${APP_NAME}' → ID ${product_id}" >&2
+    echo "$product_id"
+    return 0
+  fi
+
+  # ── Create new product ──────────────────────────────────────────────────
+  # DefectDojo requires a product type.  Use the first one available.
+  local pt_response pt_id
+  pt_response=$(curl --fail-with-body -sS \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    "${DOJO_URL}/api/v2/product_types/?limit=1") \
+    || { echo "ERROR: product_type lookup failed" >&2; exit 1; }
+  pt_id=$(echo "$pt_response" | extract_first_id)
+  if [[ -z "$pt_id" ]]; then
+    echo "ERROR: No product types exist in DefectDojo — create one via the UI first" >&2
+    exit 1
+  fi
+
+  echo "Creating product '${APP_NAME}' (prod_type=${pt_id})..." >&2
+  local created
+  created=$(APP_NAME="$APP_NAME" python3 -c "
+import json, os
+print(json.dumps({
+    'name':        os.environ['APP_NAME'],
+    'description': 'Auto-created by DevSecOps pipeline for ' + os.environ['APP_NAME'],
+    'prod_type':   int('${pt_id}'),
+}))
+")
+  local response
+  response=$(curl --fail-with-body -sS -X POST "${DOJO_URL}/api/v2/products/" \
+    -H "Authorization: Token ${DOJO_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$created") \
+    || { echo "ERROR: product creation failed: $response" >&2; exit 1; }
+
+  product_id=$(echo "$response" | extract_id)
+  if [[ -z "$product_id" ]]; then
+    echo "ERROR: product creation returned no ID: $response" >&2
+    exit 1
+  fi
+
+  echo "Created product '${APP_NAME}' → ID ${product_id}" >&2
+  echo "$product_id"
+}
 
 # ── Engagement: get or create ─────────────────────────────────────────────
 
@@ -332,13 +414,23 @@ check_scan_file() {
   return 0
 }
 
-# ── Resolve / create engagement ───────────────────────────────────────────
+# ── Resolve / create product ──────────────────────────────────────────────
 
 echo "RUN_OUTPUT_DIR=${RUN_OUTPUT_DIR}"
 if [[ ! -d "${RUN_OUTPUT_DIR}" ]]; then
   echo "ERROR: RUN_OUTPUT_DIR does not exist: ${RUN_OUTPUT_DIR}"
   exit 1
 fi
+
+DOJO_PRODUCT_ID=$(get_or_create_product)
+if [[ -z "$DOJO_PRODUCT_ID" ]]; then
+  echo "ERROR: Failed to resolve product ID"
+  exit 1
+fi
+export DOJO_PRODUCT_ID
+echo "Product ID: ${DOJO_PRODUCT_ID}"
+
+# ── Resolve / create engagement ───────────────────────────────────────────
 
 DOJO_ENGAGEMENT_ID=$(get_or_create_engagement)
 if [[ -z "$DOJO_ENGAGEMENT_ID" ]]; then
