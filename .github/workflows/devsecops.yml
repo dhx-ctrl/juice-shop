@@ -1,31 +1,23 @@
 name: DevSecOps - Security Scans (CI)
 
+concurrency:
+  group: devsecops-local-runner
+  cancel-in-progress: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wrapper workflow for Juice Shop.
+#
+# Checks out the app and the central VulnPriority repo, then delegates
+# everything to run_pipeline.sh.  Only the product key changes between apps.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   push:
-    branches: ["master"]
+    branches: ["master", "main"]
   pull_request:
+    branches: ["master", "main"]
   workflow_dispatch:
     inputs:
-      APP_NAME:
-        description: "Short identifier for the target app (no spaces)"
-        required: false
-        default: "juice-shop"
-      APP_URL:
-        description: "URL ZAP will scan from inside the zapnet Docker network"
-        required: false
-        default: "http://juice-shop:3000"
-      DOCKER_IMAGE_NAME:
-        description: "Docker image for Trivy image scan and ZAP target"
-        required: false
-        default: "bkimminich/juice-shop"
-      APP_PORT:
-        description: "Host-side port exposed on the runner machine"
-        required: false
-        default: "3000"
-      CONTAINER_PORT:
-        description: "Port the target app listens on inside the Docker container"
-        required: false
-        default: "3000"
       ENABLE_SEMGREP:
         description: "Run Semgrep SAST?"
         required: false
@@ -49,331 +41,46 @@ jobs:
     timeout-minutes: 120
 
     env:
-      SCAN_BASE_DIR: "/tmp/devsecops-scans"
-      RUN_OUTPUT_DIR: "/tmp/devsecops-scans/${{ github.run_id }}"
-
-      # ── Target configuration (overridden by workflow_dispatch inputs) ──────
-      APP_NAME:          ${{ github.event.inputs.APP_NAME          || 'juice-shop' }}
-      APP_URL:           ${{ github.event.inputs.APP_URL           || 'http://juice-shop:3000' }}
-      DOCKER_IMAGE_NAME: ${{ github.event.inputs.DOCKER_IMAGE_NAME || 'bkimminich/juice-shop' }}
-      APP_PORT:          ${{ github.event.inputs.APP_PORT          || '3000' }}
-      CONTAINER_PORT:    ${{ github.event.inputs.CONTAINER_PORT    || '3000' }}
-
-      # ── Scanner enable/disable flags ────────────────────────────────────────
-      ENABLE_SEMGREP:      ${{ github.event.inputs.ENABLE_SEMGREP      || 'true' }}
-      ENABLE_TRIVY_FS:     ${{ github.event.inputs.ENABLE_TRIVY_FS     || 'true' }}
-      ENABLE_TRIVY_IMAGE:  ${{ github.event.inputs.ENABLE_TRIVY_IMAGE  || 'true' }}
-      ENABLE_ZAP:          ${{ github.event.inputs.ENABLE_ZAP          || 'true' }}
+      ENABLE_SEMGREP:     ${{ github.event.inputs.ENABLE_SEMGREP     || 'true' }}
+      ENABLE_TRIVY_FS:    ${{ github.event.inputs.ENABLE_TRIVY_FS    || 'true' }}
+      ENABLE_TRIVY_IMAGE: ${{ github.event.inputs.ENABLE_TRIVY_IMAGE || 'true' }}
+      ENABLE_ZAP:         ${{ github.event.inputs.ENABLE_ZAP         || 'true' }}
 
     steps:
-      - name: Checkout
+      - name: Checkout app repository
         uses: actions/checkout@v4
+        with:
+          path: app
 
-      # ── Prepare output directory ───────────────────────────────────────────
-      - name: Prepare scan output directory
+      - name: Checkout VulnPriority (central CI/CD repo)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/VulnPriority
+          path: vulnpriority
+
+      - name: Run DevSecOps pipeline
         shell: bash
+        env:
+          DOJO_TOKEN: ${{ secrets.DOJO_TOKEN }}
         run: |
-          set -euo pipefail
-          mkdir -p "$RUN_OUTPUT_DIR"
-          rm -f "$RUN_OUTPUT_DIR"/* || true
-          echo "RUN_OUTPUT_DIR=$RUN_OUTPUT_DIR"
-          echo "APP_NAME=$APP_NAME | APP_URL=$APP_URL | DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME:-<none>}"
-          echo "Scanners → semgrep=$ENABLE_SEMGREP trivy_fs=$ENABLE_TRIVY_FS trivy_image=$ENABLE_TRIVY_IMAGE zap=$ENABLE_ZAP"
+          bash vulnpriority/ci-cd-security/scripts/run_pipeline.sh \
+            vulnpriority/ci-cd-security/products/juice-shop/product.env \
+            "$GITHUB_WORKSPACE/app"
 
-      # ── Write scan metadata for the CD workflow ────────────────────────────
-      # The import-defectdojo workflow reads this file so it knows which app
-      # and which scanners were run, without needing to re-declare variables.
-      # NOTE: No leading whitespace — written with printf to avoid heredoc
-      # indentation issues that previously required sed stripping.
-      - name: Write scan_meta.env
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s\n' \
-            "APP_NAME=${APP_NAME}" \
-            "APP_URL=${APP_URL}" \
-            "DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME}" \
-            "ENABLE_SEMGREP=${ENABLE_SEMGREP}" \
-            "ENABLE_TRIVY_FS=${ENABLE_TRIVY_FS}" \
-            "ENABLE_TRIVY_IMAGE=${ENABLE_TRIVY_IMAGE}" \
-            "ENABLE_ZAP=${ENABLE_ZAP}" \
-            "GIT_COMMIT=${{ github.sha }}" \
-            "GIT_BRANCH=${{ github.ref_name }}" \
-            > "$RUN_OUTPUT_DIR/scan_meta.env"
-          echo "scan_meta.env written:"
-          cat "$RUN_OUTPUT_DIR/scan_meta.env"
-
-      # ── SAST: Semgrep ─────────────────────────────────────────────────────
-      - name: "Semgrep SAST -> semgrep.json"
-        if: env.ENABLE_SEMGREP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull returntocorp/semgrep:latest
-          docker run --rm \
-            -v "${{ github.workspace }}:/src:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            returntocorp/semgrep:latest \
-            semgrep scan \
-              --config=auto \
-              --config=p/ci \
-              --config=p/security-audit \
-              --json \
-              --output /out/semgrep.json \
-              /src
-          test -s "$RUN_OUTPUT_DIR/semgrep.json"
-          echo "semgrep.json written ($(wc -c < "$RUN_OUTPUT_DIR/semgrep.json") bytes)"
-
-      # ── SCA: Trivy filesystem ─────────────────────────────────────────────
-      - name: "Trivy filesystem scan -> trivy_fs.json"
-        if: env.ENABLE_TRIVY_FS == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace:ro" \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            fs \
-            --scanners vuln,misconfig,secret,license \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_fs.json \
-            /workspace
-          test -s "$RUN_OUTPUT_DIR/trivy_fs.json"
-          echo "trivy_fs.json written ($(wc -c < "$RUN_OUTPUT_DIR/trivy_fs.json") bytes)"
-
-      # ── SCA: Trivy image ──────────────────────────────────────────────────
-      # Skipped automatically when DOCKER_IMAGE_NAME is blank OR flag is false.
-      - name: "Trivy image scan -> trivy_image.json"
-        if: env.ENABLE_TRIVY_IMAGE == 'true' && env.DOCKER_IMAGE_NAME != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull "$DOCKER_IMAGE_NAME"
-          docker pull ghcr.io/aquasecurity/trivy:0.69.3
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$RUN_OUTPUT_DIR:/out" \
-            ghcr.io/aquasecurity/trivy:0.69.3 \
-            image \
-            --scanners vuln,misconfig,secret \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output /out/trivy_image.json \
-            "$DOCKER_IMAGE_NAME"
-          test -s "$RUN_OUTPUT_DIR/trivy_image.json"
-          echo "trivy_image.json written ($(wc -c < "$RUN_OUTPUT_DIR/trivy_image.json") bytes)"
-
-      # ── DAST: ZAP ────────────────────────────────────────────────────────
-      - name: Create docker network (zapnet)
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: docker network create zapnet || true
-
-      - name: "Start target app for ZAP: ${{ env.APP_NAME }}"
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # ── Startup modes ──────────────────────────────────────────────────
-          # Mode 1 (automatic): DOCKER_IMAGE_NAME is set → pull image, start
-          #   container on zapnet.  APP_PORT is the host-side port,
-          #   CONTAINER_PORT is the port the app listens on inside the image.
-          #
-          # Mode 2 (manual):    DOCKER_IMAGE_NAME is empty → you must start
-          #   the app yourself before this step and ensure it is reachable at
-          #   APP_URL from inside the zapnet Docker network.  Connect your
-          #   container to zapnet manually, or use host networking.
-          #   APP_START_COMMAND is NOT implemented; this pipeline only does
-          #   automatic Docker-image startup.  For non-Docker apps, start them
-          #   outside the workflow and point APP_URL at them.
-          if [[ -z "${DOCKER_IMAGE_NAME:-}" ]]; then
-            echo "DOCKER_IMAGE_NAME is empty — assuming $APP_URL is already reachable."
-            echo "NOTE: The target must be accessible from inside the zapnet Docker"
-            echo "      network.  If it runs on the host, connect it to zapnet or"
-            echo "      use --network=host for ZAP instead."
-            exit 0
-          fi
-
-          docker pull "$DOCKER_IMAGE_NAME"
-          docker rm -f "target-${APP_NAME}" 2>/dev/null || true
-
-          # Derive hostname from APP_URL.
-          # APP_PORT and CONTAINER_PORT are set in the job env block.
-          CONTAINER_HOST=$(python3 -c "from urllib.parse import urlparse; u=urlparse('$APP_URL'); print(u.hostname)")
-
-          # Use the hostname from APP_URL as a network alias so ZAP can
-          # reach the container at the exact URL specified in APP_URL.
-          docker run -d \
-            --name "target-${APP_NAME}" \
-            --network zapnet \
-            --network-alias "${CONTAINER_HOST}" \
-            -p "${APP_PORT}:${CONTAINER_PORT}" \
-            "$DOCKER_IMAGE_NAME"
-
-          # Wait for the app to become ready.  The readiness check runs
-          # inside the zapnet network (via curlimages/curl) because the
-          # host cannot resolve Docker network aliases like "juice-shop".
-          echo "Waiting for $APP_URL to become ready (checking from inside zapnet)..."
-          for i in {1..90}; do
-            HTTP_CODE=$(docker run --rm --network zapnet curlimages/curl \
-                 -sS -o /dev/null -w "%{http_code}" --max-time 5 "$APP_URL" 2>/dev/null) || HTTP_CODE="000"
-            if [[ "$HTTP_CODE" =~ ^(200|301|302)$ ]]; then
-              echo "$APP_NAME responded HTTP $HTTP_CODE after ${i}×2s"
-              break
-            fi
-            if [[ $i -eq 90 ]]; then
-              echo "ERROR: $APP_URL did not become ready within 180s (last HTTP: $HTTP_CODE)"
-              docker logs "target-${APP_NAME}" 2>&1 | tail -30 || true
-              exit 1
-            fi
-            sleep 2
-          done
-
-      - name: "ZAP baseline scan -> zap.xml"
-        if: env.ENABLE_ZAP == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # ZAP runs as uid 1000 (zap) inside the container.  The host
-          # workspace is typically owned by root or the runner user, so
-          # mounting it directly at /zap/wrk causes:
-          #   PermissionError: [Errno 13] Permission denied: '/zap/wrk/zap.yaml'
-          # Fix: create a dedicated directory with open permissions.
-          ZAP_WORK_DIR="${RUN_OUTPUT_DIR}/zap_wrk"
-          rm -rf "$ZAP_WORK_DIR"
-          mkdir -p "$ZAP_WORK_DIR"
-          chmod 777 "$ZAP_WORK_DIR"
-
-          docker pull ghcr.io/zaproxy/zaproxy:stable
-
-          # Pre-flight: confirm the target is still reachable from zapnet.
-          # The image pull above can take minutes; the target may have crashed
-          # in the meantime.  ZAP gives an unhelpful "msg is null" error when
-          # the target is unreachable, so we catch it early with a clear message.
-          echo "Pre-flight: verifying $APP_URL is reachable from zapnet..."
-          PF_CODE=$(docker run --rm --network zapnet curlimages/curl \
-            -sS -o /dev/null -w "%{http_code}" --max-time 10 \
-            "$APP_URL" 2>/dev/null) || PF_CODE="000"
-          if [[ "$PF_CODE" == "000" ]]; then
-            echo "ERROR: $APP_URL is unreachable from zapnet (HTTP $PF_CODE)"
-            echo "Target container status:"
-            docker ps -a --filter "name=target-${APP_NAME}" --format "{{.Status}}" || true
-            docker logs "target-${APP_NAME}" 2>&1 | tail -30 || true
-            exit 1
-          fi
-          echo "Pre-flight OK — $APP_URL returned HTTP $PF_CODE"
-
-          docker run --rm --network zapnet \
-            -v "${ZAP_WORK_DIR}:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-            -t "$APP_URL" \
-            -x zap.xml \
-            -r zap.html || true   # ZAP exits non-zero when findings exist; that's expected
-
-          if [[ ! -s "${ZAP_WORK_DIR}/zap.xml" ]]; then
-            echo "ERROR: ZAP did not produce zap.xml — check ZAP logs above"
-            ls -la "$ZAP_WORK_DIR"
-            exit 1
-          fi
-          cp "${ZAP_WORK_DIR}/zap.xml" "$RUN_OUTPUT_DIR/zap.xml"
-          echo "zap.xml written ($(wc -c < "$RUN_OUTPUT_DIR/zap.xml") bytes)"
-
-      - name: "Stop target app: ${{ env.APP_NAME }}"
-        if: always() && env.ENABLE_ZAP == 'true' && env.DOCKER_IMAGE_NAME != ''
-        shell: bash
-        run: docker rm -f "target-${APP_NAME}" 2>/dev/null || true
-
-      # ── Verify results ────────────────────────────────────────────────────
-      - name: List scan results
-        if: always()
-        shell: bash
-        run: |
-          echo "=== Scan results in $RUN_OUTPUT_DIR ==="
-          ls -la "$RUN_OUTPUT_DIR" || true
-
-      # ── DEBUG: Inspect raw scan outputs ───────────────────────────────────
-      # Remove once findings counts in DefectDojo are confirmed correct.
-      - name: "[DEBUG] Inspect scan outputs"
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          inspect_semgrep() {
-            python3 -c "
-          import json, sys
-          with open('$RUN_OUTPUT_DIR/semgrep.json') as f:
-              d = json.load(f)
-          results = d.get('results', [])
-          errors  = d.get('errors', [])
-          print(f'  findings : {len(results)}')
-          print(f'  errors   : {len(errors)}')
-          for i, r in enumerate(results[:5]):
-              print(f'  [{i+1}] {r.get(\"check_id\",\"?\")} | {r.get(\"path\",\"?\")}:{r.get(\"start\",{}).get(\"line\",\"?\")} | severity={r.get(\"extra\",{}).get(\"severity\",\"?\")}')
-          if len(results) > 5:
-              print(f'  ... and {len(results)-5} more')
-          "
-          }
-
-          inspect_trivy() {
-            local file="$1"
-            python3 -c "
-          import json, sys
-          with open('$RUN_OUTPUT_DIR/$file') as f:
-              d = json.load(f)
-          results = d.get('Results', [])
-          total = sum(len(r.get('Vulnerabilities') or []) + len(r.get('Misconfigurations') or []) for r in results)
-          print(f'  Result blocks : {len(results)} | Total vulns+misconfigs: {total}')
-          count = 0
-          for r in results:
-              for v in (r.get('Vulnerabilities') or [])[:3]:
-                  print(f'  [vuln] {v.get(\"VulnerabilityID\",\"?\")} | {v.get(\"PkgName\",\"?\")} | {v.get(\"Severity\",\"?\")}')
-                  count += 1
-                  if count >= 5: break
-              if count >= 5: break
-          " "$file"
-          }
-
-          inspect_zap() {
-            python3 -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('$RUN_OUTPUT_DIR/zap.xml')
-          root = tree.getroot()
-          alerts    = root.findall('.//alertitem')
-          instances = root.findall('.//instance')
-          print(f'  alert types : {len(alerts)} | instances: {len(instances)}')
-          for a in alerts[:5]:
-              print(f'  [{a.findtext(\"alert\",\"?\")}] risk={a.findtext(\"riskdesc\",\"?\")} count={a.findtext(\"count\",\"?\")}')
-          "
-          }
-
-          for scanner in semgrep trivy_fs trivy_image zap; do
-            echo "══════════════════════════════════════════════════"
-            echo "DEBUG: $scanner"
-            echo "══════════════════════════════════════════════════"
-            case "$scanner" in
-              semgrep)
-                [[ -s "$RUN_OUTPUT_DIR/semgrep.json" ]]     && inspect_semgrep          || echo "  SKIPPED / missing"
-                ;;
-              trivy_fs)
-                [[ -s "$RUN_OUTPUT_DIR/trivy_fs.json" ]]    && inspect_trivy trivy_fs.json || echo "  SKIPPED / missing"
-                ;;
-              trivy_image)
-                [[ -s "$RUN_OUTPUT_DIR/trivy_image.json" ]] && inspect_trivy trivy_image.json || echo "  SKIPPED / missing"
-                ;;
-              zap)
-                [[ -s "$RUN_OUTPUT_DIR/zap.xml" ]]          && inspect_zap              || echo "  SKIPPED / missing"
-                ;;
-            esac
-          done
-
-      # ── Upload artifacts to GitHub ────────────────────────────────────────
       - name: Upload scan reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "ci-scan-results-${{ env.APP_NAME }}-${{ github.run_id }}"
-          path: "/tmp/devsecops-scans/${{ github.run_id }}/*"
+          name: "ci-scan-results-juice-shop-${{ github.run_id }}"
+          path: "/tmp/devsecops-scans/${{ github.run_id }}/"
+          if-no-files-found: ignore
+
+      - name: Cleanup scan directory
+        if: always()
+        shell: bash
+        run: |
+          set -a
+          source vulnpriority/ci-cd-security/products/juice-shop/product.env
+          set +a
+          export RUN_OUTPUT_DIR="/tmp/devsecops-scans/${{ github.run_id }}"
+          bash vulnpriority/ci-cd-security/scripts/cleanup.sh
